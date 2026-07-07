@@ -3,9 +3,10 @@
 // - 是否启用同步只看有没有填「同步码」。
 export function makeApi(getSync) {
   const base = () => (getSync().serverUrl || window.location.origin || '').replace(/\/$/, '');
+  const theCode = () => (getSync().code || '').trim().toLowerCase();
 
   async function pull(bookId) {
-    const { code } = getSync();
+    const code = theCode();
     if (!code) return null;
     const u = `${base()}/api/progress?code=${encodeURIComponent(code)}&book=${encodeURIComponent(bookId)}`;
     const r = await fetch(u, { cache: 'no-store' });
@@ -14,7 +15,7 @@ export function makeApi(getSync) {
   }
 
   async function push(bookId, progress, device) {
-    const { code } = getSync();
+    const code = theCode();
     if (!code) return { skipped: true };
     const r = await fetch(`${base()}/api/progress`, {
       method: 'POST',

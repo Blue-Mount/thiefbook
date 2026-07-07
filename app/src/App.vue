@@ -75,15 +75,16 @@ async function pushNow() {
 
 // ---------- 应用远端进度 ----------
 function applyRemote(remote, notify) {
-  if (!remote) return;
+  if (!remote) return false;
   const local = storage.getProgress(BOOK_ID);
   const localTs = local?.updatedAt || 0;
-  if (remote.updatedAt <= localTs) return;              // 本地更新，忽略
+  if (remote.updatedAt <= localTs) return false;         // 本地更新，忽略
   const samePos = local && local.chapter === remote.chapter && Math.abs((local.percent || 0) - (remote.percent || 0)) < 0.01;
   storage.setProgress(BOOK_ID, { ...remote, device: remote.device });
-  if (samePos) return;
+  if (samePos) return false;
   goChapter(remote.chapter, remote.percent, false);
   if (notify) say(`已从「${remote.device || '云端'}」同步到 ${chapterTitle(remote.chapter)}`);
+  return true;
 }
 
 function chapterTitle(idx) {
@@ -125,6 +126,9 @@ function onKey(e) {
 // ---------- 设置持久化 ----------
 watch(settings, () => storage.setSettings({ ...settings }), { deep: true });
 function saveSync() {
+  // 同步码统一小写+去空格，避免手机自动大写/多打空格导致两端对不上
+  sync.code = (sync.code || '').trim().toLowerCase();
+  sync.serverUrl = (sync.serverUrl || '').trim();
   storage.setSync({ ...sync });
   showSettings.value = false;
   refreshSync();
@@ -136,8 +140,12 @@ async function refreshSync() {
   if (!ok) { syncStatus.value = 'error'; say('连不上同步服务器，请检查地址'); return; }
   try {
     const remote = await api.pull(BOOK_ID);
-    applyRemote(remote, true);
+    const adopted = applyRemote(remote, true);
     syncStatus.value = 'ok';
+    if (!adopted) {
+      if (!remote) say('云端本码下暂无进度（先在另一台读几章并保存）');
+      else say(`已是最新 · 云端 ${chapterTitle(remote.chapter)}`);
+    }
   } catch {
     syncStatus.value = 'error';
   }
@@ -255,8 +263,10 @@ onBeforeUnmount(() => {
         <h3>多端同步</h3>
         <p class="sub">两台设备填<b>相同的同步码</b>即可自动同步进度。</p>
         <label>同步码
-          <input type="text" v-model.trim="sync.code" placeholder="自定义，如 eric-2026" />
+          <input type="text" v-model.trim="sync.code" placeholder="自定义，如 eric-2026"
+            autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off" />
         </label>
+        <p class="sub" v-if="sync.code">两端只要这串一致即可（不区分大小写）：<b>{{ sync.code.trim().toLowerCase() }}</b></p>
         <label>服务器地址<span class="opt">（选填，留空=当前网址）</span>
           <input type="text" v-model.trim="sync.serverUrl" placeholder="留空即可，本地开发时才需填" />
         </label>
