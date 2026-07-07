@@ -14,12 +14,13 @@ echo "==> [2/3] 安装后端依赖"
 cd "$ROOT/server"
 npm install --omit=dev
 
-echo "==> [3/3] 用 pm2 启动（80 端口，进度存 server/data）"
+PORT="${PORT:-8787}"
+echo "==> [3/3] 用 pm2 启动（${PORT} 端口，进度存 server/data）"
 pm2 delete thiefbook >/dev/null 2>&1 || true
-PORT=80 STATIC_DIR="$ROOT/app/dist" DATA_DIR="$ROOT/server/data" \
+PORT="$PORT" STATIC_DIR="$ROOT/app/dist" DATA_DIR="$ROOT/server/data" \
   pm2 start index.js --name thiefbook
 pm2 save
 
 echo ""
-echo "✅ 部署完成！浏览器打开  http://<你的公网IP>  即可。"
+echo "✅ 部署完成！浏览器打开  http://<你的公网IP>:${PORT}  即可。"
 echo "   进度数据存在 $ROOT/server/data/store.json"
