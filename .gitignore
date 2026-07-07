@@ -1,0 +1,8 @@
+node_modules/
+dist/
+server/data/
+*.log
+.DS_Store
+
+# 破解 exe 不入库（大、且不该传 GitHub）
+*.exe

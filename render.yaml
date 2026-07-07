@@ -1,0 +1,16 @@
+# Render 部署配置（Docker 方式，免绑卡）。
+# 进度存 Upstash Redis，所以 Render 免费版无持久磁盘也没问题。
+# 部署后在 Render 控制台把这两个环境变量填上（从 Upstash 复制）：
+#   UPSTASH_REDIS_REST_URL / UPSTASH_REDIS_REST_TOKEN
+services:
+  - type: web
+    name: thiefbook-sync
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    region: singapore
+    envVars:
+      - key: UPSTASH_REDIS_REST_URL
+        sync: false
+      - key: UPSTASH_REDIS_REST_TOKEN
+        sync: false
