@@ -15,6 +15,9 @@ body {
 .reader {
   width: 100%;
   height: 100%;
+  /* 窗口是 transparent 的，这条实色背景由这里画出来（JS 会用配置色覆盖），
+     这样才能去掉 Win11 frameless 的灰边框和投影。默认色防止首帧透明闪一下。 */
+  background: #1e1e1e;
   padding: 3px 10px;
   white-space: normal;
   word-break: break-all;

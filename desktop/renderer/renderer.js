@@ -25,6 +25,7 @@ function applyStyle() {
   const s = config.settings;
   const font = `${s.fontSize}px/${s.lineHeight} ${s.fontFamily}`;
   bar.style.color = s.fg;
+  bar.style.background = s.bg; // 窗口透明，这条实色背景由 CSS 画（才能去掉系统边框/投影）
   bar.style.font = font;
   measure.style.font = font;
   measure.style.width = contentWidth() + 'px';
@@ -186,11 +187,14 @@ function onWheel(e) {
 // 拖动窗口（左键按住）。用 pointer capture，保证细窗口里指针移出也能持续收到事件。
 // 锁定时主进程会忽略移动。
 let dragging = false;
+let dragMode = 'move'; // 'move' | 'resize'
 let lastX = 0,
   lastY = 0;
 function onPointerDown(e) {
   if (e.button !== 0) return;
   dragging = true;
+  // 按住 Alt 拖动 = 改大小；否则只移动。刻意区分，避免细窗口里误触把框拖大。
+  dragMode = e.altKey ? 'resize' : 'move';
   lastX = e.screenX;
   lastY = e.screenY;
   bar.setPointerCapture(e.pointerId);
@@ -201,7 +205,9 @@ function onPointerMove(e) {
   const dy = e.screenY - lastY;
   lastX = e.screenX;
   lastY = e.screenY;
-  if (dx || dy) window.api.drag(dx, dy);
+  if (!dx && !dy) return;
+  if (dragMode === 'resize') window.api.resize(dx, dy);
+  else window.api.drag(dx, dy);
 }
 function onPointerUp(e) {
   dragging = false;

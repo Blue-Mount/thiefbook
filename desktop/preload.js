@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('api', {
   openSettings: () => ipcRenderer.send('settings:open'),
   openJump: () => ipcRenderer.send('jump:open'),
   drag: (dx, dy) => ipcRenderer.send('win:drag', { dx, dy }),
+  resize: (dx, dy) => ipcRenderer.send('win:resize', { dx, dy }),
   quit: () => ipcRenderer.send('app:quit'),
   closeSelf: () => ipcRenderer.send('window:close'),
 

@@ -82,7 +82,7 @@ function readerHeight() {
 function applyWindowConfig() {
   if (!reader || reader.isDestroyed()) return;
   const s = config.settings;
-  reader.setBackgroundColor(s.bg);
+  // 不再 setBackgroundColor：窗口保持透明，实色条由渲染层 CSS 画，避免重新引入边框/投影
   reader.setOpacity(Number(s.opacity) || 1);
   reader.setContentSize(config.width, readerHeight());
 }
@@ -94,8 +94,10 @@ function createReader() {
     minWidth: 160,
     minHeight: 20,
     frame: false,
-    transparent: false,
-    // 关键：关掉系统四边缩放。34px 高的细窗口几乎整条都在系统缩放热区里，
+    // transparent 才能真正去掉 Win11 frameless 窗口那圈 DWM 灰边 + 投影；
+    // 实色条改由渲染层 CSS 画（body 透明，只有 .reader 画背景色）。
+    transparent: true,
+    // 关掉系统四边缩放。34px 高的细窗口几乎整条都在系统缩放热区里，
     // 想移动一按就触发缩放 → 窗口越拖越大。改大小改由「设置」里的滑块驱动。
     resizable: false,
     movable: true,
@@ -106,7 +108,7 @@ function createReader() {
     minimizable: false,
     useContentSize: true,
     hasShadow: false,
-    backgroundColor: config.settings.bg,
+    backgroundColor: '#00000000',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -234,7 +236,11 @@ ipcMain.handle('config:get', () => config);
 ipcMain.handle('config:set', (e, patch) => {
   config = deepMerge(config, patch || {});
   saveConfig();
-  applyWindowConfig();
+  // 只有外观/尺寸改动才动窗口。进度保存(patch.progress)绝不碰几何——
+  // 否则拖动时防抖的进度保存会不停 setContentSize，和拖动叠加导致“越拖越大”。
+  if (patch && (patch.width != null || patch.height != null || patch.settings)) {
+    applyWindowConfig();
+  }
   // 广播给「除发起方之外」的窗口：避免阅读器保存自身进度时被回声，触发无谓重排。
   for (const w of BrowserWindow.getAllWindows()) {
     if (!w.isDestroyed() && w.webContents.id !== e.sender.id) {
@@ -267,15 +273,26 @@ ipcMain.on('app:quit', () => app.quit());
 
 ipcMain.on('win:drag', (_e, { dx, dy }) => {
   if (!reader || reader.isDestroyed() || config.locked) return;
-  // 用 setBounds 显式钉住 width/height，避免帧率/DPI 取整误差在多次 setPosition 中
-  // 累积，导致窗口一边拖一边悄悄变大（老 bug 根因）。
-  const b = reader.getBounds();
-  const nx = Math.round(b.x + dx);
-  const ny = Math.round(b.y + dy);
-  reader.setBounds({ x: nx, y: ny, width: b.width, height: b.height });
+  // 只移动、绝不碰尺寸：setPosition 物理上只能改 x/y，无法改宽高，
+  // 从根上杜绝“越拖越大”。不再用 setBounds(会带 width/height，DPI 取整会漂)。
+  const [x, y] = reader.getPosition();
+  const nx = Math.round(x + dx);
+  const ny = Math.round(y + dy);
+  reader.setPosition(nx, ny);
   config.x = nx;
   config.y = ny;
   saveConfig(); // 已防抖，拖动过程不会频繁写盘
+});
+
+// 按住 Alt 拖动 = 改大小（刻意操作，不会误触；普通拖动只移动）。
+// 字号不变，改完广播 config:changed 让渲染层按新框重排。
+ipcMain.on('win:resize', (_e, { dx, dy }) => {
+  if (!reader || reader.isDestroyed() || config.locked) return;
+  config.width = Math.max(160, Math.round((config.width || 1000) + dx));
+  config.height = Math.max(20, Math.round((config.height || 34) + dy));
+  reader.setContentSize(config.width, readerHeight());
+  saveConfig();
+  reader.webContents.send('config:changed', config);
 });
 
 // 从设置/快速选章节窗口跳转 → 转发给阅读器
