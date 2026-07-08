@@ -1,11 +1,10 @@
-// 与同步服务通信。
-// - serverUrl 为空时默认用「同源地址」（前端由同步服务托管的部署场景，最省心）。
-// - 单用户场景：不再让用户输「同步码」，改用内置固定身份，和桌面端保持一致
-//   （见 desktop/renderer/sync.js 的 SYNC_CODE，两端必须一致才能同一份进度）。
+// 与阿里云同步服务通信，接口与手机网页端完全一致。
+// 单用户场景：不再让用户输「同步码」，改用一个内置固定身份，
+// 手机端与电脑端只要都用这个常量就自动同一份进度（两端必须一致，见 app/src/lib/api.js）。
 export const SYNC_CODE = 'eric-fuhan';
 
-export function makeApi(getSync) {
-  const base = () => (getSync().serverUrl || window.location.origin || '').replace(/\/$/, '');
+export function makeSync(getSync) {
+  const base = () => (getSync().serverUrl || 'http://123.57.90.23:8787').replace(/\/$/, '');
   const theCode = () => SYNC_CODE;
 
   async function pull(bookId) {

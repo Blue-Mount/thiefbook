@@ -58,7 +58,6 @@ function schedulePush() {
 }
 async function pushNow() {
   clearTimeout(pushTimer);
-  if (!sync.code) return;
   try {
     syncStatus.value = 'syncing';
     const res = await api.push(BOOK_ID, makeProgress(), device);
@@ -106,6 +105,28 @@ function goChapter(idx, percent = 0, resetScroll = true) {
 const prevChapter = () => goChapter(chapterIndex.value - 1);
 const nextChapter = () => goChapter(chapterIndex.value + 1);
 
+// ---------- 目录：打开即滚到当前章并高亮 ----------
+const tocList = ref(null);
+function openToc() {
+  showToc.value = true;
+  nextTick(() => {
+    const el = tocList.value?.querySelector('li.active');
+    if (el) el.scrollIntoView({ block: 'center' });
+  });
+}
+
+// ---------- 夜间模式一键切换（半夜看不晃眼）----------
+let lastLightTheme = settings.theme === 'dark' ? 'sepia' : settings.theme;
+const isNight = computed(() => settings.theme === 'dark');
+function toggleNight() {
+  if (settings.theme === 'dark') {
+    settings.theme = lastLightTheme || 'sepia';
+  } else {
+    lastLightTheme = settings.theme;
+    settings.theme = 'dark';
+  }
+}
+
 // ---------- 滚动监听 ----------
 let scrollTimer = null;
 function onScroll() {
@@ -126,15 +147,12 @@ function onKey(e) {
 // ---------- 设置持久化 ----------
 watch(settings, () => storage.setSettings({ ...settings }), { deep: true });
 function saveSync() {
-  // 同步码统一小写+去空格，避免手机自动大写/多打空格导致两端对不上
-  sync.code = (sync.code || '').trim().toLowerCase();
   sync.serverUrl = (sync.serverUrl || '').trim();
   storage.setSync({ ...sync });
   showSettings.value = false;
   refreshSync();
 }
 async function refreshSync() {
-  if (!sync.code) { syncStatus.value = 'local'; return; }
   syncStatus.value = 'syncing';
   const ok = await api.health();
   if (!ok) { syncStatus.value = 'error'; say('连不上同步服务器，请检查地址'); return; }
@@ -190,11 +208,12 @@ onBeforeUnmount(() => {
   <div :class="['app', 'theme-' + settings.theme]">
     <!-- 顶栏 -->
     <header class="bar top">
-      <button class="icon" @click="showToc = true" title="目录">☰</button>
+      <button class="icon" @click="openToc" title="目录">☰</button>
       <div class="titles">
         <div class="book-title">{{ book?.title || '摸鱼看书' }}</div>
         <div class="chap-title">{{ chapter?.title }}</div>
       </div>
+      <button class="icon" @click="toggleNight" :title="isNight ? '日间模式' : '夜间模式'">{{ isNight ? '☀' : '☾' }}</button>
       <button class="icon" @click="showSettings = true" title="设置">⚙</button>
     </header>
 
@@ -234,14 +253,15 @@ onBeforeUnmount(() => {
     <div v-if="showToc" class="drawer-mask" @click.self="showToc = false">
       <aside class="drawer">
         <div class="drawer-head">目录 · 共 {{ chapterCount }} 章</div>
-        <ul class="toc">
+        <ul class="toc" ref="tocList">
           <li
             v-for="c in book?.toc"
             :key="c.id"
             :class="{ active: c.id === chapterIndex }"
             @click="goChapter(c.id)"
           >
-            {{ c.title }}
+            <span class="toc-title">{{ c.title }}</span>
+            <span v-if="c.id === chapterIndex" class="toc-now">在读</span>
           </li>
         </ul>
       </aside>
@@ -261,12 +281,7 @@ onBeforeUnmount(() => {
         <label>行距 <input type="range" min="1.4" max="2.6" step="0.1" v-model.number="settings.lineHeight" /> {{ settings.lineHeight }}</label>
 
         <h3>多端同步</h3>
-        <p class="sub">两台设备填<b>相同的同步码</b>即可自动同步进度。</p>
-        <label>同步码
-          <input type="text" v-model.trim="sync.code" placeholder="自定义，如 eric-2026"
-            autocapitalize="none" autocorrect="off" spellcheck="false" autocomplete="off" />
-        </label>
-        <p class="sub" v-if="sync.code">两端只要这串一致即可（不区分大小写）：<b>{{ sync.code.trim().toLowerCase() }}</b></p>
+        <p class="sub">手机与电脑已自动同一份进度，无需再填同步码。</p>
         <label>服务器地址<span class="opt">（选填，留空=当前网址）</span>
           <input type="text" v-model.trim="sync.serverUrl" placeholder="留空即可，本地开发时才需填" />
         </label>

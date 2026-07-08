@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src *; style-src 'self' 'unsafe-inline';" />
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <div class="head">
+      <span class="title">快速选章节</span>
+      <button class="x" id="close">✕</button>
+    </div>
+    <div class="body" style="padding-top: 10px">
+      <input type="text" id="search" placeholder="输入关键词 / 章号，↑↓ 选择，回车跳转，Esc 关闭" autofocus />
+      <div class="list" id="toc" style="max-height: 320px"></div>
+    </div>
+    <script type="module" src="jump.js"></script>
+  </body>
+</html>

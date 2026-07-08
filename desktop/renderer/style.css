@@ -1,0 +1,35 @@
+/* 细长一条：只有背景色 + 一行文字，像状态栏/日志 */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  cursor: default;
+  user-select: none;
+}
+.reader {
+  width: 100%;
+  height: 100%;
+  padding: 3px 10px;
+  white-space: normal;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  color: #7a8290;
+  font: 14px/1.6 Consolas, monospace;
+}
+/* 隐藏的测量节点：与正文同宽同字体，用来分页 */
+#measure {
+  position: absolute;
+  left: -99999px;
+  top: 0;
+  visibility: hidden;
+  white-space: normal;
+  word-break: break-all;
+  overflow-wrap: anywhere;
+}
