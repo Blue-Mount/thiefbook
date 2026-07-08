@@ -26,6 +26,10 @@ async function init() {
   $('opacity').value = s.opacity;
   $('opacityV').textContent = s.opacity;
   $('fontFamily').value = s.fontFamily;
+  $('winWidth').value = config.width;
+  $('winWidthV').textContent = config.width;
+  $('winHeight').value = config.height;
+  $('winHeightV').textContent = config.height;
   $('serverUrl').value = config.sync.serverUrl || '';
 
   // 绑定：改动即时生效（setConfig 会广播给阅读器）
@@ -35,6 +39,9 @@ async function init() {
   bindRange('fontSize', (v) => window.api.setConfig({ settings: { fontSize: Number(v) } }));
   bindRange('lineHeight', (v) => window.api.setConfig({ settings: { lineHeight: Number(v) } }));
   bindRange('opacity', (v) => window.api.setConfig({ settings: { opacity: Number(v) } }));
+  // 框大小：直接改顶层 width/height，主进程 applyWindowConfig 会 setContentSize 并让阅读器重排
+  bindRange('winWidth', (v) => window.api.setConfig({ width: Number(v) }));
+  bindRange('winHeight', (v) => window.api.setConfig({ height: Number(v) }));
 
   const saveSync = () => {
     const serverUrl = ($('serverUrl').value || '').trim();

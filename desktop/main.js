@@ -95,7 +95,9 @@ function createReader() {
     minHeight: 20,
     frame: false,
     transparent: false,
-    resizable: true,
+    // 关键：关掉系统四边缩放。34px 高的细窗口几乎整条都在系统缩放热区里，
+    // 想移动一按就触发缩放 → 窗口越拖越大。改大小改由「设置」里的滑块驱动。
+    resizable: false,
     movable: true,
     skipTaskbar: true,
     alwaysOnTop: true,
@@ -137,15 +139,8 @@ function createReader() {
     saveConfig();
   });
 
-  // 用户拖拽窗口边缘改大小 → 记录真实内容尺寸，并通知渲染层按新框重排（字号不变）
-  reader.on('resize', () => {
-    if (!reader || reader.isDestroyed()) return;
-    const [w, h] = reader.getContentSize();
-    config.width = w;
-    config.height = h;
-    saveConfig();
-    reader.webContents.send('config:changed', config);
-  });
+  // 尺寸改由「设置」里的宽/高滑块驱动（config:set → applyWindowConfig 调 setContentSize，
+  // 再广播 config:changed 让渲染层按新框重排）。这里不再监听系统 resize。
 }
 
 function openSettings() {
