@@ -11,6 +11,7 @@ const STATIC_DIR = process.env.STATIC_DIR || path.resolve(process.cwd(), '..', '
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const BOOKS_DIR = process.env.BOOKS_DIR || path.join(DATA_DIR, 'books');
 const BUILTIN_BOOKS_DIR = path.join(STATIC_DIR, 'books');
+const BOOK_UPLOAD_CODE = process.env.BOOK_UPLOAD_CODE || 'eric-fuhan';
 const store = await makeStore();
 
 fs.mkdirSync(BOOKS_DIR, { recursive: true });
@@ -44,9 +45,18 @@ app.post('/api/progress', async (req, res) => {
     device: String(device || 'unknown').slice(0, 40),
   };
   const existing = await store.get(code, book);
-  if (existing && existing.updatedAt > incoming.updatedAt)
+  if (existing && existing.updatedAt > incoming.updatedAt) {
+    console.log(JSON.stringify({
+      event: 'progress-rejected', at: new Date().toISOString(), book,
+      incoming, current: existing,
+    }));
     return res.json({ accepted: false, current: existing });
+  }
   await store.set(code, book, incoming);
+  console.log(JSON.stringify({
+    event: 'progress-accepted', at: new Date().toISOString(), book,
+    previous: existing, current: incoming,
+  }));
   res.json({ accepted: true, current: incoming });
 });
 
@@ -152,13 +162,14 @@ function listBookMetadata() {
 }
 
 app.get('/api/books', (req, res) => {
-  if (!isValidCode(req.query.code)) return res.status(400).json({ error: 'bad code' });
+  if (req.query.code !== BOOK_UPLOAD_CODE) return res.status(403).json({ error: 'forbidden' });
   res.json(listBookMetadata());
 });
 
 app.post('/api/books', express.raw({ type: 'application/octet-stream', limit: '64mb' }), (req, res) => {
   const { code, id, title } = req.query;
-  if (!isValidCode(code) || !isValidBookId(id) || typeof title !== 'string' || !title.trim())
+  if (code !== BOOK_UPLOAD_CODE) return res.status(403).json({ error: 'forbidden' });
+  if (!isValidBookId(id) || typeof title !== 'string' || !title.trim())
     return res.status(400).json({ error: 'bad params' });
   if (!Buffer.isBuffer(req.body) || !req.body.length)
     return res.status(400).json({ error: 'empty file' });

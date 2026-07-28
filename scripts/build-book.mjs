@@ -98,6 +98,19 @@ function main() {
   const outFile = path.join(outDir, `${bookId}.json`);
   fs.writeFileSync(outFile, JSON.stringify(book));
 
+  // 同时维护书库索引。前端通过它发现所有已生成的小说，无需再写死 bookId。
+  const libraryFile = path.join(outDir, 'index.json');
+  let library = [];
+  try {
+    const parsed = JSON.parse(fs.readFileSync(libraryFile, 'utf8'));
+    if (Array.isArray(parsed)) library = parsed;
+  } catch {}
+  const entry = { id: book.id, title: book.title, author: book.author, chapterCount: book.chapterCount };
+  const oldIndex = library.findIndex((item) => item.id === book.id);
+  if (oldIndex >= 0) library[oldIndex] = entry;
+  else library.push(entry);
+  fs.writeFileSync(libraryFile, JSON.stringify(library, null, 2));
+
   const bytes = fs.statSync(outFile).size;
   console.log(`✅ 生成: ${outFile}`);
   console.log(`   书名: ${book.title} / 作者: ${book.author}`);
