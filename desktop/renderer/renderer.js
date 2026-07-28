@@ -86,14 +86,17 @@ function pageForPercent(p) {
 }
 
 // ---------- 章节 / 翻页 ----------
-function loadChapter(idx, percent = 0) {
+function loadChapter(idx, percent = 0, persist = true) {
   chapterIndex = Math.max(0, Math.min(idx, book.chapters.length - 1));
   chapterText = buildChapterText(chapterIndex);
   pages = paginate(chapterText);
   pageIndex = pageForPercent(percent);
   render();
-  saveLocal();
-  schedulePush();
+  // 启动恢复、应用远端进度只负责定位，不能伪造一次“本地阅读”再反向覆盖云端。
+  if (persist) {
+    saveLocal();
+    schedulePush();
+  }
 }
 function nextPage() {
   if (pageIndex < pages.length - 1) {
@@ -134,12 +137,17 @@ function schedulePush() {
 }
 async function pushNow() {
   clearTimeout(pushTimer);
+  // 上报最近一次真实阅读动作保存的进度；不能在发送时重造时间戳，
+  // 否则启动恢复出的旧位置也可能被包装成“最新”并覆盖云端。
+  const progress = config.progress;
+  if (!progress) return;
   try {
-    const res = await sync.push(BOOK_ID, makeProgress(), config.device);
+    const res = await sync.push(BOOK_ID, progress, config.device);
     if (res.skipped) return;
     if (res.accepted === false && res.current) applyRemote(res.current);
   } catch {
-    /* 网络异常忽略，下一次再推 */
+    // 短暂断网时保留同一个 updatedAt 重试，既不丢更新，也不会抢占真正较新的远端进度。
+    pushTimer = setTimeout(pushNow, 5000);
   }
 }
 function applyRemote(remote) {
@@ -153,7 +161,7 @@ function applyRemote(remote) {
   config.progress = { ...remote };
   window.api.setConfig({ progress: config.progress });
   if (same) return false;
-  loadChapter(remote.chapter, remote.percent || 0);
+  loadChapter(remote.chapter, remote.percent || 0, false);
   return true;
 }
 async function pullNow() {
@@ -243,7 +251,8 @@ async function init() {
     return;
   }
   const local = config.progress;
-  loadChapter(local?.chapter || 0, local?.percent || 0);
+  // 仅恢复位置；没有本地记录时显示第一章，但绝不把第一章自动推到云端。
+  loadChapter(local?.chapter || 0, local?.percent || 0, false);
 
   bar.addEventListener('contextmenu', (e) => {
     e.preventDefault();

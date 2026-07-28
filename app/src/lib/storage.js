@@ -3,6 +3,7 @@ const K = {
   settings: 'thiefbook:settings',
   sync: 'thiefbook:sync',
   device: 'thiefbook:device',
+  currentBook: 'thiefbook:current-book',
   progress: (bookId) => `thiefbook:progress:${bookId}`,
 };
 
@@ -28,6 +29,9 @@ export const storage = {
 
   getProgress: (bookId) => read(K.progress(bookId), null),
   setProgress: (bookId, p) => write(K.progress(bookId), p),
+
+  getCurrentBook: () => read(K.currentBook, 'fuhan'),
+  setCurrentBook: (bookId) => write(K.currentBook, bookId),
 
   getDevice() {
     let d = read(K.device, null);

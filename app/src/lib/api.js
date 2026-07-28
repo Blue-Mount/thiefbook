@@ -36,5 +36,23 @@ export function makeApi(getSync) {
     }
   }
 
-  return { pull, push, health };
+  async function listBooks() {
+    const r = await fetch(`${base()}/api/books?code=${encodeURIComponent(theCode())}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error('list books failed ' + r.status);
+    return r.json();
+  }
+
+  async function uploadBook(file, id, title) {
+    const u = `${base()}/api/books?code=${encodeURIComponent(theCode())}&id=${encodeURIComponent(id)}&title=${encodeURIComponent(title)}&filename=${encodeURIComponent(file.name)}`;
+    const r = await fetch(u, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || 'upload failed ' + r.status);
+    return body;
+  }
+
+  return { pull, push, health, listBooks, uploadBook };
 }
