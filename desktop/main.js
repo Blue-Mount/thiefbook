@@ -34,6 +34,7 @@ function defaultConfig() {
     },
     sync: { serverUrl: DEFAULT_SERVER_URL, code: '' },
     currentBookId: 'fuhan',
+    currentBookUpdatedAt: 0,
     progresses: {}, // { [bookId]: { chapter, percent, updatedAt, device } }
   };
 }
@@ -319,8 +320,13 @@ ipcMain.on('reader:switchBook', (_e, payload) => {
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(bookId)) return;
   config.currentBookId = bookId;
   config.currentBookTitle = String(payload?.title || bookId).slice(0, 100);
+  config.currentBookUpdatedAt = Date.now();
   saveConfig();
-  if (reader && !reader.isDestroyed()) reader.webContents.send('reader:switchBook', { id: bookId });
+  if (reader && !reader.isDestroyed()) reader.webContents.send('reader:switchBook', {
+    id: bookId,
+    updatedAt: config.currentBookUpdatedAt,
+    broadcast: true,
+  });
 });
 ipcMain.on('window:close', (e) => {
   const w = BrowserWindow.fromWebContents(e.sender);

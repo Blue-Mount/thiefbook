@@ -9,6 +9,13 @@ $instanceMutex = New-Object System.Threading.Mutex($true, 'Local\ThiefBookTunnel
 
 if (-not $createdNew) { exit 0 }
 
+# Task Scheduler may keep an old environment block for an already-running
+# logon session.  Reload the user's proxy settings explicitly so devtunnel can
+# refresh its Microsoft sign-in token after Windows restarts.
+$userEnvironment = Get-ItemProperty 'HKCU:\Environment' -ErrorAction SilentlyContinue
+if ($userEnvironment.http_proxy) { $env:http_proxy = [string]$userEnvironment.http_proxy }
+if ($userEnvironment.https_proxy) { $env:https_proxy = [string]$userEnvironment.https_proxy }
+
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 function Write-SupervisorLog([string]$message) {

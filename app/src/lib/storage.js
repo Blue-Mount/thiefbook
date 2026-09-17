@@ -30,8 +30,16 @@ export const storage = {
   getProgress: (bookId) => read(K.progress(bookId), null),
   setProgress: (bookId, p) => write(K.progress(bookId), p),
 
-  getCurrentBook: () => read(K.currentBook, 'fuhan'),
-  setCurrentBook: (bookId) => write(K.currentBook, bookId),
+  getCurrentBookState() {
+    const value = read(K.currentBook, 'fuhan');
+    return typeof value === 'string' ? { book: value, updatedAt: 0, device: '' } : value;
+  },
+  getCurrentBook() {
+    return this.getCurrentBookState()?.book || 'fuhan';
+  },
+  setCurrentBook(bookId, updatedAt = Date.now(), device = '') {
+    write(K.currentBook, { book: bookId, updatedAt, device });
+  },
 
   getDevice() {
     let d = read(K.device, null);

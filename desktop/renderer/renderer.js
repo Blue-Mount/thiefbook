@@ -1,4 +1,4 @@
-import { loadBook, BOOK_ID } from './book.js';
+import { loadBook } from './book.js';
 import { makeSync } from './sync.js';
 
 const bar = document.getElementById('bar');
@@ -12,6 +12,8 @@ let pages = [[0, 0]]; // [startChar, endChar]
 let pageIndex = 0;
 
 const sync = makeSync(() => config.sync);
+const activeBookId = () => config?.currentBookId || 'fuhan';
+const activeProgress = (bookId = activeBookId()) => config?.progresses?.[bookId] || null;
 
 // ---------- 样式 / 布局 ----------
 function contentWidth() {
@@ -127,47 +129,95 @@ let saveTimer = null;
 function saveLocal() {
   clearTimeout(saveTimer);
   const p = { ...makeProgress(), device: config.device };
+  config.progresses = { ...(config.progresses || {}), [activeBookId()]: p };
   config.progress = p;
-  saveTimer = setTimeout(() => window.api.setConfig({ progress: p }), 400);
+  const bookId = activeBookId();
+  saveTimer = setTimeout(() => window.api.setConfig({ progress: p, progresses: { [bookId]: p } }), 400);
+  return p;
 }
 let pushTimer = null;
 function schedulePush() {
   clearTimeout(pushTimer);
   pushTimer = setTimeout(pushNow, 1500);
 }
-async function pushNow() {
+async function pushNow(bookId = activeBookId()) {
   clearTimeout(pushTimer);
   // 上报最近一次真实阅读动作保存的进度；不能在发送时重造时间戳，
   // 否则启动恢复出的旧位置也可能被包装成“最新”并覆盖云端。
-  const progress = config.progress;
+  const progress = activeProgress(bookId);
   if (!progress) return;
   try {
-    const res = await sync.push(BOOK_ID, progress, config.device);
+    const res = await sync.push(bookId, progress, config.device);
     if (res.skipped) return;
-    if (res.accepted === false && res.current) applyRemote(res.current);
+    if (res.accepted === false && res.current && bookId === activeBookId()) applyRemote(res.current);
   } catch {
     // 短暂断网时保留同一个 updatedAt 重试，既不丢更新，也不会抢占真正较新的远端进度。
     pushTimer = setTimeout(pushNow, 5000);
   }
 }
 function applyRemote(remote) {
-  if (!remote) return false;
-  const localTs = config.progress?.updatedAt || 0;
+  if (!remote || remote.book !== activeBookId()) return false;
+  const local = activeProgress();
+  const localTs = local?.updatedAt || 0;
   if (remote.updatedAt <= localTs) return false; // 本地更新，忽略
   const same =
-    config.progress &&
-    config.progress.chapter === remote.chapter &&
-    Math.abs((config.progress.percent || 0) - (remote.percent || 0)) < 0.01;
+    local &&
+    local.chapter === remote.chapter &&
+    Math.abs((local.percent || 0) - (remote.percent || 0)) < 0.01;
+  config.progresses = { ...(config.progresses || {}), [activeBookId()]: { ...remote } };
   config.progress = { ...remote };
-  window.api.setConfig({ progress: config.progress });
+  window.api.setConfig({ progress: config.progress, progresses: { [activeBookId()]: config.progress } });
   if (same) return false;
   loadChapter(remote.chapter, remote.percent || 0, false);
   return true;
 }
 async function pullNow() {
   try {
-    const remote = await sync.pull(BOOK_ID);
+    const remote = await sync.pull(activeBookId());
     applyRemote(remote);
+  } catch {
+    /* ignore */
+  }
+}
+
+async function switchToBook(bookId, updatedAt = Date.now(), broadcast = false) {
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(bookId)) return;
+  if (book && bookId === activeBookId()) return;
+  const previousBookId = activeBookId();
+  if (book) {
+    saveLocal();
+    void pushNow(previousBookId);
+  }
+  try {
+    const loaded = await loadBook(config.sync.serverUrl, bookId);
+    book = loaded;
+    config.currentBookId = bookId;
+    config.currentBookTitle = `${loaded.title}${loaded.author ? ` · ${loaded.author}` : ''}`;
+    config.currentBookUpdatedAt = updatedAt;
+    config.progress = activeProgress(bookId);
+    await window.api.setConfig({
+      currentBookId: bookId,
+      currentBookTitle: config.currentBookTitle,
+      currentBookUpdatedAt: updatedAt,
+      progress: config.progress,
+    });
+    const local = activeProgress(bookId);
+    loadChapter(local?.chapter || 0, local?.percent || 0, false);
+    if (broadcast) await sync.pushCurrentBook(bookId, updatedAt, config.device);
+    await pullNow();
+  } catch {
+    bar.textContent = '⚠ 小说加载失败，请检查服务器后重试';
+  }
+}
+
+async function syncCurrentBook() {
+  try {
+    const remote = await sync.pullCurrentBook();
+    if (remote?.book && remote.updatedAt > (config.currentBookUpdatedAt || 0)) {
+      await switchToBook(remote.book, remote.updatedAt, false);
+    } else if (activeBookId() && (config.currentBookUpdatedAt || 0) > (remote?.updatedAt || 0)) {
+      await sync.pushCurrentBook(activeBookId(), config.currentBookUpdatedAt, config.device);
+    }
   } catch {
     /* ignore */
   }
@@ -245,12 +295,12 @@ async function init() {
   config = await window.api.getConfig();
   applyStyle();
   try {
-    book = await loadBook(config.sync.serverUrl);
+    book = await loadBook(config.sync.serverUrl, activeBookId());
   } catch (e) {
     bar.textContent = '⚠ 书籍加载失败，请检查网络后重启';
     return;
   }
-  const local = config.progress;
+  const local = activeProgress();
   // 仅恢复位置；没有本地记录时显示第一章，但绝不把第一章自动推到云端。
   loadChapter(local?.chapter || 0, local?.percent || 0, false);
 
@@ -266,13 +316,18 @@ async function init() {
 
   window.api.onConfigChanged(onConfigChanged);
   window.api.onGoto((p) => loadChapter(p.chapter, p.percent || 0));
+  window.api.onSwitchBook((p) => switchToBook(p.id, p.updatedAt || Date.now(), p.broadcast !== false));
   window.api.onShown(() => pullNow());
   window.api.onHiding(() => pushNow());
 
   // 云端拉取一次，并定时轮询捕捉手机端的更新
   pullNow();
+  syncCurrentBook();
   setInterval(() => {
-    if (!document.hidden) pullNow();
+    if (!document.hidden) {
+      pullNow();
+      syncCurrentBook();
+    }
   }, 20000);
 }
 

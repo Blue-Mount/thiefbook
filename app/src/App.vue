@@ -200,7 +200,7 @@ async function refreshLibrary() {
   }
 }
 
-async function switchBook(bookId, notify = true) {
+async function switchBook(bookId, notify = true, broadcast = true) {
   if (bookId === activeBookId() && book.value) {
     showLibrary.value = false;
     return;
@@ -219,11 +219,16 @@ async function switchBook(bookId, notify = true) {
   showLibrary.value = false;
   book.value = null;
   currentBookId.value = bookId;
-  storage.setCurrentBook(bookId);
+  const switchedAt = Date.now();
+  storage.setCurrentBook(bookId, switchedAt, device);
+  if (broadcast) {
+    api.pushCurrentBook(bookId, switchedAt, device).catch(() => {});
+  }
   window.scrollTo({ top: 0, behavior: 'auto' });
 
   try {
-    const r = await fetch(`./books/${encodeURIComponent(bookId)}.json`, { cache: 'no-store' });
+    // Versioned URL bypasses stale CacheFirst entries created by older PWA builds.
+    const r = await fetch(`./books/${encodeURIComponent(bookId)}.json?v=2`, { cache: 'no-store' });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const loaded = await r.json();
     if (bookId !== activeBookId()) return;
@@ -240,6 +245,25 @@ async function switchBook(bookId, notify = true) {
     book.value = null;
     loading.value = false;
     loadError.value = '书籍加载失败：' + e.message;
+  }
+}
+
+async function syncCurrentBook(notify = true) {
+  try {
+    const remote = await api.pullCurrentBook();
+    const local = storage.getCurrentBookState();
+    if (remote?.book && remote.updatedAt > (local?.updatedAt || 0)) {
+      if (!books.value.some((b) => b.id === remote.book)) return;
+      storage.setCurrentBook(remote.book, remote.updatedAt, remote.device || '');
+      if (remote.book !== activeBookId()) {
+        currentBookId.value = remote.book;
+        await switchBook(remote.book, notify, false);
+      }
+    } else if (local?.book && local.updatedAt > (remote?.updatedAt || 0)) {
+      await api.pushCurrentBook(local.book, local.updatedAt, local.device || device);
+    }
+  } catch {
+    // Selection sync is best-effort; reading and progress sync continue offline.
   }
 }
 
@@ -274,16 +298,18 @@ async function uploadBook(e) {
 // ---------- 启动 ----------
 onMounted(async () => {
   await refreshLibrary();
+  await syncCurrentBook(false);
   if (!books.value.some((b) => b.id === activeBookId())) {
     currentBookId.value = books.value[0]?.id || 'fuhan';
-    storage.setCurrentBook(currentBookId.value);
+    storage.setCurrentBook(currentBookId.value, Date.now(), device);
   }
-  await switchBook(activeBookId(), false);
+  await switchBook(activeBookId(), false, false);
 
   window.addEventListener('scroll', onScroll, { passive: true });
   window.addEventListener('keydown', onKey);
   document.addEventListener('visibilitychange', () => { if (document.hidden) pushNow(); });
   window.addEventListener('beforeunload', () => { saveLocal(); });
+  setInterval(() => { if (!document.hidden) syncCurrentBook(true); }, 20000);
 });
 
 onBeforeUnmount(() => {

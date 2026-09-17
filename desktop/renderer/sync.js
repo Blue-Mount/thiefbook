@@ -41,5 +41,21 @@ export function makeSync(getSync) {
     return r.json();
   }
 
-  return { pull, push, health, listBooks };
+  async function pullCurrentBook() {
+    const r = await fetch(`${base()}/api/current-book?code=${encodeURIComponent(theCode())}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error('pull current book failed ' + r.status);
+    return r.json();
+  }
+
+  async function pushCurrentBook(book, updatedAt, device) {
+    const r = await fetch(`${base()}/api/current-book`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code: theCode(), book, updatedAt, device }),
+    });
+    if (!r.ok) throw new Error('push current book failed ' + r.status);
+    return r.json();
+  }
+
+  return { pull, push, health, listBooks, pullCurrentBook, pushCurrentBook };
 }

@@ -22,14 +22,20 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // 书籍 JSON 较大（约 9MB），提高单文件缓存上限，实现离线可读
+        // Do not precache whole novels.  They are large and an old precache
+        // can make the browser keep showing a different/obsolete book.
         maximumFileSizeToCacheInBytes: 30 * 1024 * 1024,
-        globPatterns: ['**/*.{js,css,html,svg,json}'],
+        cleanupOutdatedCaches: true,
+        globPatterns: ['**/*.{js,css,html,svg}'],
         runtimeCaching: [
           {
-            urlPattern: ({ url }) => url.pathname.endsWith('.json'),
-            handler: 'CacheFirst',
-            options: { cacheName: 'books', expiration: { maxEntries: 20 } },
+            urlPattern: ({ url }) => url.pathname.startsWith('/books/') && url.pathname.endsWith('.json'),
+            handler: 'NetworkFirst',
+            options: {
+              cacheName: 'books-v2',
+              networkTimeoutSeconds: 30,
+              expiration: { maxEntries: 20 },
+            },
           },
         ],
       },

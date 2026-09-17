@@ -2,6 +2,7 @@
 // 进度按「同步码 + 小说 ID」隔离，采用 last-write-wins。
 import express from 'express';
 import cors from 'cors';
+import compression from 'compression';
 import fs from 'node:fs';
 import path from 'node:path';
 import { makeStore } from './storage.js';
@@ -21,6 +22,7 @@ const isValidBookId = (id) => typeof id === 'string' && /^[a-z0-9][a-z0-9_-]{0,6
 
 const app = express();
 app.use(cors());
+app.use(compression());
 app.use(express.json({ limit: '64kb' }));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: Date.now() }));
@@ -148,18 +150,48 @@ function metadataFromFile(file) {
   }
 }
 
+const metadataCache = new Map();
+
 function listBookMetadata() {
   const byId = new Map();
   for (const dir of [BUILTIN_BOOKS_DIR, BOOKS_DIR]) {
     if (!fs.existsSync(dir)) continue;
     for (const name of fs.readdirSync(dir)) {
       if (!name.endsWith('.json') || name === 'index.json') continue;
-      const meta = metadataFromFile(path.join(dir, name));
+      const file = path.join(dir, name);
+      const stat = fs.statSync(file);
+      const cached = metadataCache.get(file);
+      const meta = cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size
+        ? cached.meta
+        : metadataFromFile(file);
+      metadataCache.set(file, { mtimeMs: stat.mtimeMs, size: stat.size, meta });
       if (meta) byId.set(meta.id, meta);
     }
   }
   return [...byId.values()];
 }
+
+app.get('/api/current-book', async (req, res) => {
+  const { code } = req.query;
+  if (!isValidCode(code)) return res.status(400).json({ error: 'bad code' });
+  res.json(await store.get(code, '__current_book__'));
+});
+
+app.post('/api/current-book', async (req, res) => {
+  const { code, book, updatedAt, device } = req.body || {};
+  if (!isValidCode(code) || !isValidBookId(book)) return res.status(400).json({ error: 'bad params' });
+  const incoming = {
+    book,
+    updatedAt: Number(updatedAt) || Date.now(),
+    device: String(device || 'unknown').slice(0, 40),
+  };
+  const existing = await store.get(code, '__current_book__');
+  if (existing && existing.updatedAt > incoming.updatedAt) {
+    return res.json({ accepted: false, current: existing });
+  }
+  await store.set(code, '__current_book__', incoming);
+  res.json({ accepted: true, current: incoming });
+});
 
 app.get('/api/books', (req, res) => {
   if (req.query.code !== BOOK_UPLOAD_CODE) return res.status(403).json({ error: 'forbidden' });
