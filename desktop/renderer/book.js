@@ -26,7 +26,16 @@ export async function loadBook(serverUrl, bookId = 'fuhan') {
 
 async function fetchBook(serverUrl, bookId) {
   const base = (serverUrl || 'https://vjqm1hqc-8787.jpe1.devtunnels.ms').replace(/\/$/, '');
-  const r = await fetch(`${base}/books/${encodeURIComponent(bookId)}.json`, { cache: 'no-store' });
-  if (!r.ok) throw new Error('书籍下载失败 ' + r.status);
-  return r.json();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const r = await fetch(`${base}/books/${encodeURIComponent(bookId)}.json`, {
+      cache: 'no-store',
+      signal: controller.signal,
+    });
+    if (!r.ok) throw new Error('书籍下载失败 ' + r.status);
+    return r.json();
+  } finally {
+    clearTimeout(timer);
+  }
 }

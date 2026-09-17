@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 
 $tunnelId = 'tbk-b147bfa6'
 $localHealthUrl = 'http://127.0.0.1:8787/api/health'
+$publicHealthUrl = 'https://vjqm1hqc-8787.jpe1.devtunnels.ms/api/health'
 $logDir = Join-Path $env:LOCALAPPDATA 'thiefbook\logs'
 $supervisorLog = Join-Path $logDir 'tunnel-supervisor.log'
 $createdNew = $false
@@ -100,15 +101,29 @@ while ($true) {
     $process = Start-Process -FilePath $devTunnel -ArgumentList @('host', $tunnelId) -WindowStyle Hidden `
       -RedirectStandardOutput $stdoutLog -RedirectStandardError $stderrLog -PassThru
 
-    # devtunnel has its own reconnect loop.  Do not kill a live host merely
-    # because an HTTPS health probe is temporarily affected by the local proxy.
+    # devtunnel can remain alive while its SSH forwarding window is wedged.
+    # Probe the actual public path and recycle the host after consecutive failures.
     $nextRenewal = if ($renewalSucceeded) { (Get-Date).AddDays(7) } else { (Get-Date).AddHours(1) }
+    $failedPublicChecks = 0
     while (-not $process.HasExited) {
+      try {
+        $publicHealth = Invoke-RestMethod -Uri $publicHealthUrl -TimeoutSec 8
+        if ($publicHealth.ok -ne $true) { throw 'public health response did not contain ok=true' }
+        $failedPublicChecks = 0
+      } catch {
+        $failedPublicChecks++
+        Write-SupervisorLog "public health failed ($failedPublicChecks/3): $($_.Exception.Message)"
+        if ($failedPublicChecks -ge 3 -and -not $process.HasExited) {
+          Write-SupervisorLog "restarting unhealthy tunnel pid=$($process.Id)"
+          Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+          break
+        }
+      }
       if ((Get-Date) -ge $nextRenewal) {
         $renewalSucceeded = Invoke-TunnelRenewal $devTunnel
         $nextRenewal = if ($renewalSucceeded) { (Get-Date).AddDays(7) } else { (Get-Date).AddHours(1) }
       }
-      Start-Sleep -Seconds 20
+      Start-Sleep -Seconds 12
     }
 
     $process.WaitForExit()

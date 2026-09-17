@@ -10,6 +10,9 @@ const LEGACY_SERVER_URL = 'http://123.57.90.23:8787';
 // ---------- 配置持久化（userData/config.json）----------
 const CONFIG_PATH = () => path.join(app.getPath('userData'), 'config.json');
 const BOOK_CACHE = (bookId = 'fuhan') => path.join(app.getPath('userData'), `book-${String(bookId).replace(/[^a-z0-9_-]/gi, '') || 'fuhan'}.json`);
+const BUNDLED_BOOKS_DIR = () => app.isPackaged
+  ? path.join(process.resourcesPath, 'books')
+  : path.join(__dirname, '..', 'app', 'public', 'books');
 
 function randId() {
   return Math.random().toString(36).slice(2, 6);
@@ -268,7 +271,11 @@ ipcMain.handle('book:getCache', (_e, bookId) => {
     // 覆汉优先兼容读取旧版缓存文件。
     const file = BOOK_CACHE(bookId);
     const legacy = path.join(app.getPath('userData'), 'fuhan.json');
-    return fs.readFileSync(fs.existsSync(file) ? file : (bookId === 'fuhan' ? legacy : file), 'utf8');
+    const bundled = path.join(BUNDLED_BOOKS_DIR(), `${String(bookId).replace(/[^a-z0-9_-]/gi, '')}.json`);
+    const source = fs.existsSync(file)
+      ? file
+      : (bookId === 'fuhan' && fs.existsSync(legacy) ? legacy : bundled);
+    return fs.readFileSync(source, 'utf8');
   } catch {
     return null;
   }
@@ -280,6 +287,33 @@ ipcMain.handle('book:setCache', (_e, bookId, json) => {
   } catch {
     return false;
   }
+});
+ipcMain.handle('book:listLocal', () => {
+  const files = new Set();
+  const bundledDir = BUNDLED_BOOKS_DIR();
+  if (fs.existsSync(bundledDir)) {
+    for (const name of fs.readdirSync(bundledDir)) {
+      if (name.endsWith('.json') && name !== 'index.json') files.add(path.join(bundledDir, name));
+    }
+  }
+  const userDir = app.getPath('userData');
+  for (const name of fs.readdirSync(userDir)) {
+    if (/^book-[a-z0-9_-]+\.json$/i.test(name) || name === 'fuhan.json') files.add(path.join(userDir, name));
+  }
+  const byId = new Map();
+  for (const file of files) {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+      if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(parsed.id) || !Array.isArray(parsed.chapters)) continue;
+      byId.set(parsed.id, {
+        id: parsed.id,
+        title: parsed.title || parsed.id,
+        author: parsed.author || '',
+        chapterCount: Number(parsed.chapterCount) || parsed.chapters.length,
+      });
+    } catch {}
+  }
+  return [...byId.values()];
 });
 
 ipcMain.on('menu:show', showContextMenu);

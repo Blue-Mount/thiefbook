@@ -228,9 +228,19 @@ async function switchBook(bookId, notify = true, broadcast = true) {
 
   try {
     // Versioned URL bypasses stale CacheFirst entries created by older PWA builds.
-    const r = await fetch(`./books/${encodeURIComponent(bookId)}.json?v=2`, { cache: 'no-store' });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const loaded = await r.json();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
+    let loaded;
+    try {
+      const r = await fetch(`./books/${encodeURIComponent(bookId)}.json?v=2`, {
+        cache: 'no-store',
+        signal: controller.signal,
+      });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      loaded = await r.json();
+    } finally {
+      clearTimeout(timer);
+    }
     if (bookId !== activeBookId()) return;
     book.value = loaded;
     const local = storage.getProgress(bookId);

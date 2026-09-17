@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('api', {
   // 书籍缓存
   getBookCache: (bookId) => ipcRenderer.invoke('book:getCache', bookId),
   setBookCache: (bookId, json) => ipcRenderer.invoke('book:setCache', bookId, json),
+  listLocalBooks: () => ipcRenderer.invoke('book:listLocal'),
 
   // 窗口/菜单
   showMenu: () => ipcRenderer.send('menu:show'),

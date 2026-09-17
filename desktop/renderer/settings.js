@@ -4,6 +4,16 @@ import { makeSync } from './sync.js';
 let config = null;
 const $ = (id) => document.getElementById(id);
 
+// 窗口控制不能等待网络。服务器失联时，关闭按钮和 Esc 也必须立即可用。
+function closeWin() {
+  if (config) saveSync();
+  window.api.closeSelf();
+}
+$('close').addEventListener('click', closeWin);
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeWin();
+});
+
 function bindRange(id, apply) {
   const el = $(id);
   const v = $(id + 'V');
@@ -34,13 +44,7 @@ async function init() {
   $('serverUrl').value = config.sync.serverUrl || '';
 
   const sync = makeSync(() => ({ serverUrl: ($('serverUrl').value || '').trim() }));
-  try {
-    const books = await sync.listBooks();
-    $('bookSelect').innerHTML = books.map((b) => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.title)}${b.author ? ` · ${escapeHtml(b.author)}` : ''}</option>`).join('');
-    $('bookSelect').value = config.currentBookId || 'fuhan';
-  } catch {
-    $('bookSelect').innerHTML = `<option value="${escapeHtml(config.currentBookId || 'fuhan')}">${escapeHtml(config.currentBookTitle || '覆汉')}</option>`;
-  }
+  void refreshBookList(sync);
   $('switchBook').addEventListener('click', () => {
     const select = $('bookSelect');
     const option = select.options[select.selectedIndex];
@@ -60,22 +64,34 @@ async function init() {
   bindRange('winWidth', (v) => window.api.setConfig({ width: Number(v) }));
   bindRange('winHeight', (v) => window.api.setConfig({ height: Number(v) }));
 
-  const saveSync = () => {
-    const serverUrl = ($('serverUrl').value || '').trim();
-    window.api.setConfig({ sync: { serverUrl } });
-  };
   $('serverUrl').addEventListener('change', saveSync);
 
-  const closeWin = () => {
-    saveSync(); // 关闭前兜底存一次，防止「输入后直接点关闭」漏掉 change 事件
-    window.api.closeSelf();
-  };
-  $('close').addEventListener('click', closeWin);
-  window.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeWin();
-  });
-
   buildToc();
+}
+
+function saveSync() {
+  const serverUrl = ($('serverUrl').value || '').trim();
+  return window.api.setConfig({ sync: { serverUrl } });
+}
+
+async function refreshBookList(sync) {
+  let books = [];
+  try {
+    books = await sync.listBooks();
+  } catch {
+    books = await window.api.listLocalBooks();
+  }
+  if (!books.some((b) => b.id === (config.currentBookId || 'fuhan'))) {
+    books.unshift({
+      id: config.currentBookId || 'fuhan',
+      title: config.currentBookTitle || '覆汉',
+      author: '',
+    });
+  }
+  $('bookSelect').innerHTML = books.map((b) =>
+    `<option value="${escapeHtml(b.id)}">${escapeHtml(b.title)}${b.author ? ` · ${escapeHtml(b.author)}` : ''}</option>`
+  ).join('');
+  $('bookSelect').value = config.currentBookId || 'fuhan';
 }
 
 // ---------- 目录 ----------
@@ -89,8 +105,6 @@ function buildToc() {
     .catch(() => {
       $('toc').innerHTML = '<div class="item">目录加载失败（先让阅读器联网一次）</div>';
     });
-
-  $('search').addEventListener('input', (e) => renderToc(e.target.value.trim()));
 }
 function renderToc(q) {
   const list = $('toc');
@@ -115,5 +129,7 @@ function renderToc(q) {
 function escapeHtml(s) {
   return String(s).replace(/[&<>]/g, (m) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[m]));
 }
+
+$('search').addEventListener('input', (e) => renderToc(e.target.value.trim()));
 
 init();
