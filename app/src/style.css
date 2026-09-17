@@ -27,7 +27,7 @@ body {
 .bar.top { top: 0; border-bottom: 1px solid var(--line); }
 .bar.bottom { bottom: 0; border-top: 1px solid var(--line); justify-content: space-around;
   padding-bottom: env(safe-area-inset-bottom, 0); }
-.bar .titles { flex: 1; min-width: 0; text-align: center; }
+.bar .titles { flex: 1; min-width: 0; text-align: center; cursor: pointer; }
 .book-title { font-size: 13px; color: var(--sub); }
 .chap-title { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 

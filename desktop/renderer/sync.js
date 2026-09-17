@@ -1,10 +1,10 @@
-// 与阿里云同步服务通信，接口与手机网页端完全一致。
+// 与同步服务通信，接口与手机网页端完全一致。
 // 单用户场景：不再让用户输「同步码」，改用一个内置固定身份，
 // 手机端与电脑端只要都用这个常量就自动同一份进度（两端必须一致，见 app/src/lib/api.js）。
 export const SYNC_CODE = 'eric-fuhan';
 
 export function makeSync(getSync) {
-  const base = () => (getSync().serverUrl || 'http://123.57.90.23:8787').replace(/\/$/, '');
+  const base = () => (getSync().serverUrl || 'https://vjqm1hqc-8787.jpe1.devtunnels.ms').replace(/\/$/, '');
   const theCode = () => SYNC_CODE;
 
   async function pull(bookId) {
@@ -35,5 +35,11 @@ export function makeSync(getSync) {
     }
   }
 
-  return { pull, push, health };
+  async function listBooks() {
+    const r = await fetch(`${base()}/api/books?code=${encodeURIComponent(theCode())}`, { cache: 'no-store' });
+    if (!r.ok) throw new Error('list books failed ' + r.status);
+    return r.json();
+  }
+
+  return { pull, push, health, listBooks };
 }

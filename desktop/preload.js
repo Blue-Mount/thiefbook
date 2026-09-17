@@ -8,8 +8,8 @@ contextBridge.exposeInMainWorld('api', {
   onConfigChanged: (cb) => ipcRenderer.on('config:changed', (_e, cfg) => cb(cfg)),
 
   // 书籍缓存
-  getBookCache: () => ipcRenderer.invoke('book:getCache'),
-  setBookCache: (json) => ipcRenderer.invoke('book:setCache', json),
+  getBookCache: (bookId) => ipcRenderer.invoke('book:getCache', bookId),
+  setBookCache: (bookId, json) => ipcRenderer.invoke('book:setCache', bookId, json),
 
   // 窗口/菜单
   showMenu: () => ipcRenderer.send('menu:show'),
@@ -23,6 +23,8 @@ contextBridge.exposeInMainWorld('api', {
   // 章节跳转（跨窗口）
   gotoChapter: (payload) => ipcRenderer.send('reader:goto', payload),
   onGoto: (cb) => ipcRenderer.on('reader:goto', (_e, p) => cb(p)),
+  switchBook: (payload) => ipcRenderer.send('reader:switchBook', payload),
+  onSwitchBook: (cb) => ipcRenderer.on('reader:switchBook', (_e, p) => cb(p)),
 
   // 老板键相关事件
   onShown: (cb) => ipcRenderer.on('reader:shown', () => cb()),

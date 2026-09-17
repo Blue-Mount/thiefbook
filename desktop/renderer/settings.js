@@ -1,4 +1,5 @@
 import { loadBook } from './book.js';
+import { makeSync } from './sync.js';
 
 let config = null;
 const $ = (id) => document.getElementById(id);
@@ -32,6 +33,22 @@ async function init() {
   $('winHeightV').textContent = config.height;
   $('serverUrl').value = config.sync.serverUrl || '';
 
+  const sync = makeSync(() => ({ serverUrl: ($('serverUrl').value || '').trim() }));
+  try {
+    const books = await sync.listBooks();
+    $('bookSelect').innerHTML = books.map((b) => `<option value="${escapeHtml(b.id)}">${escapeHtml(b.title)}${b.author ? ` · ${escapeHtml(b.author)}` : ''}</option>`).join('');
+    $('bookSelect').value = config.currentBookId || 'fuhan';
+  } catch {
+    $('bookSelect').innerHTML = `<option value="${escapeHtml(config.currentBookId || 'fuhan')}">${escapeHtml(config.currentBookTitle || '覆汉')}</option>`;
+  }
+  $('switchBook').addEventListener('click', () => {
+    const select = $('bookSelect');
+    const option = select.options[select.selectedIndex];
+    window.api.switchBook({ id: select.value, title: option?.textContent || select.value });
+    config.currentBookId = select.value;
+    buildToc();
+  });
+
   // 绑定：改动即时生效（setConfig 会广播给阅读器）
   $('bg').addEventListener('input', (e) => window.api.setConfig({ settings: { bg: e.target.value } }));
   $('fg').addEventListener('input', (e) => window.api.setConfig({ settings: { fg: e.target.value } }));
@@ -64,7 +81,7 @@ async function init() {
 // ---------- 目录 ----------
 let toc = [];
 function buildToc() {
-  loadBook(config.sync.serverUrl)
+  loadBook(config.sync.serverUrl, config.currentBookId || 'fuhan')
     .then((book) => {
       toc = book.toc || [];
       renderToc('');
@@ -77,7 +94,7 @@ function buildToc() {
 }
 function renderToc(q) {
   const list = $('toc');
-  const cur = config.progress?.chapter ?? 0;
+  const cur = config.progresses?.[config.currentBookId || 'fuhan']?.chapter ?? config.progress?.chapter ?? 0;
   const filtered = q
     ? toc.filter((c) => c.title.includes(q) || String(c.id) === q)
     : toc;

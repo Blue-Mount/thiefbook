@@ -4,9 +4,12 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen } = require('e
 const path = require('node:path');
 const fs = require('node:fs');
 
+const DEFAULT_SERVER_URL = 'https://vjqm1hqc-8787.jpe1.devtunnels.ms';
+const LEGACY_SERVER_URL = 'http://123.57.90.23:8787';
+
 // ---------- 配置持久化（userData/config.json）----------
 const CONFIG_PATH = () => path.join(app.getPath('userData'), 'config.json');
-const BOOK_CACHE = () => path.join(app.getPath('userData'), 'fuhan.json');
+const BOOK_CACHE = (bookId = 'fuhan') => path.join(app.getPath('userData'), `book-${String(bookId).replace(/[^a-z0-9_-]/gi, '') || 'fuhan'}.json`);
 
 function randId() {
   return Math.random().toString(36).slice(2, 6);
@@ -29,8 +32,9 @@ function defaultConfig() {
       lineHeight: 1.6,
       opacity: 1,
     },
-    sync: { serverUrl: 'http://123.57.90.23:8787', code: '' },
-    progress: null, // { chapter, percent, updatedAt, device }
+    sync: { serverUrl: DEFAULT_SERVER_URL, code: '' },
+    currentBookId: 'fuhan',
+    progresses: {}, // { [bookId]: { chapter, percent, updatedAt, device } }
   };
 }
 
@@ -53,6 +57,13 @@ function loadConfig() {
   try {
     const raw = fs.readFileSync(CONFIG_PATH(), 'utf8');
     config = deepMerge(defaultConfig(), JSON.parse(raw));
+    // 兼容 1.0.x：把旧的单本进度迁移到覆汉，之后每本书独立保存。
+    if (config.progress && !config.progresses?.fuhan) config.progresses.fuhan = config.progress;
+    // 已安装旧版覆盖升级时，把阿里云旧地址自动迁移到本机公网地址。
+    if ((config.sync?.serverUrl || '').replace(/\/+$/, '') === LEGACY_SERVER_URL) {
+      config.sync.serverUrl = DEFAULT_SERVER_URL;
+      saveConfig();
+    }
   } catch {
     config = defaultConfig();
   }
@@ -212,6 +223,7 @@ function toggleReader() {
 // ---------- 右键菜单（原生，可画到细窗口之外）----------
 function showContextMenu() {
   const template = [
+    { label: `当前小说：${config.currentBookTitle || config.currentBookId}`, enabled: false },
     { label: '快速选章节…  (Alt+G)', click: openJump },
     { label: '设置 / 目录…', click: openSettings },
     { type: 'separator' },
@@ -250,16 +262,19 @@ ipcMain.handle('config:set', (e, patch) => {
   return config;
 });
 
-ipcMain.handle('book:getCache', () => {
+ipcMain.handle('book:getCache', (_e, bookId) => {
   try {
-    return fs.readFileSync(BOOK_CACHE(), 'utf8');
+    // 覆汉优先兼容读取旧版缓存文件。
+    const file = BOOK_CACHE(bookId);
+    const legacy = path.join(app.getPath('userData'), 'fuhan.json');
+    return fs.readFileSync(fs.existsSync(file) ? file : (bookId === 'fuhan' ? legacy : file), 'utf8');
   } catch {
     return null;
   }
 });
-ipcMain.handle('book:setCache', (_e, json) => {
+ipcMain.handle('book:setCache', (_e, bookId, json) => {
   try {
-    fs.writeFileSync(BOOK_CACHE(), json);
+    fs.writeFileSync(BOOK_CACHE(bookId), json);
     return true;
   } catch {
     return false;
@@ -298,6 +313,14 @@ ipcMain.on('win:resize', (_e, { dx, dy }) => {
 // 从设置/快速选章节窗口跳转 → 转发给阅读器
 ipcMain.on('reader:goto', (_e, payload) => {
   if (reader && !reader.isDestroyed()) reader.webContents.send('reader:goto', payload);
+});
+ipcMain.on('reader:switchBook', (_e, payload) => {
+  const bookId = String(payload?.id || '');
+  if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(bookId)) return;
+  config.currentBookId = bookId;
+  config.currentBookTitle = String(payload?.title || bookId).slice(0, 100);
+  saveConfig();
+  if (reader && !reader.isDestroyed()) reader.webContents.send('reader:switchBook', { id: bookId });
 });
 ipcMain.on('window:close', (e) => {
   const w = BrowserWindow.fromWebContents(e.sender);

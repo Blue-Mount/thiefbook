@@ -9,14 +9,14 @@ let config = null;
 async function init() {
   config = await window.api.getConfig();
   try {
-    const book = await loadBook(config.sync.serverUrl);
+    const book = await loadBook(config.sync.serverUrl, config.currentBookId || 'fuhan');
     toc = book.toc || [];
   } catch {
     $('toc').innerHTML = '<div class="item">目录加载失败（先让阅读器联网一次）</div>';
     return;
   }
   filtered = toc;
-  active = config.progress?.chapter ?? 0;
+  active = config.progresses?.[config.currentBookId || 'fuhan']?.chapter ?? config.progress?.chapter ?? 0;
   render();
 
   const search = $('search');
