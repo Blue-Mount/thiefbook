@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { storage } from './lib/storage';
 import { makeApi } from './lib/api';
+import { useAudiobook, formatAudioTime } from './lib/audiobook';
 
 const book = ref(null);
 const books = ref([]);
@@ -26,6 +27,7 @@ let toastTimer = null;
 
 const chapter = computed(() => book.value?.chapters[chapterIndex.value] || null);
 const chapterCount = computed(() => book.value?.chapters.length || 0);
+let audiobook;
 
 function activeBookId() {
   return currentBookId.value;
@@ -49,7 +51,13 @@ function scrollToPercent(p) {
   window.scrollTo({ top: max * (p || 0), behavior: 'auto' });
 }
 function makeProgress() {
-  return { chapter: chapterIndex.value, percent: currentPercent(), updatedAt: Date.now() };
+  const progress = { chapter: chapterIndex.value, percent: currentPercent(), updatedAt: Date.now() };
+  if (audiobook?.state.started && audiobook.state.bookId === activeBookId() &&
+      audiobook.state.chapter === chapterIndex.value) {
+    progress.mode = 'audio';
+    progress.segment = audiobook.state.segment;
+  }
+  return progress;
 }
 
 // ---------- 保存（本地即时 + 云端防抖）----------
@@ -88,7 +96,9 @@ function applyRemote(remote, notify) {
   const local = storage.getProgress(activeBookId());
   const localTs = local?.updatedAt || 0;
   if (remote.updatedAt <= localTs) return false;
-  const samePos = local && local.chapter === remote.chapter && Math.abs((local.percent || 0) - (remote.percent || 0)) < 0.01;
+  const samePos = local && local.chapter === remote.chapter &&
+    Math.abs((local.percent || 0) - (remote.percent || 0)) < 0.01 &&
+    local.mode === remote.mode && local.segment === remote.segment;
   storage.setProgress(activeBookId(), { ...remote, device: remote.device });
   if (samePos) return false;
   goChapter(remote.chapter, remote.percent, false, false);
@@ -101,8 +111,9 @@ function chapterTitle(idx) {
 }
 
 // ---------- 章节跳转 ----------
-function goChapter(idx, percent = 0, resetScroll = true, persist = true) {
+function goChapter(idx, percent = 0, resetScroll = true, persist = true, fromAudio = false) {
   if (idx < 0 || idx >= chapterCount.value) return;
+  if (!fromAudio && idx !== chapterIndex.value) audiobook?.stop();
   chapterIndex.value = idx;
   showToc.value = false;
   nextTick(() => {
@@ -149,10 +160,49 @@ function onScroll() {
   }, 400);
 }
 function onKey(e) {
-  if (showSettings.value || showToc.value || showLibrary.value) return;
+  if (showSettings.value || showToc.value || showLibrary.value || listen.open ||
+      ['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target?.tagName)) return;
   if (e.key === 'ArrowLeft') prevChapter();
   if (e.key === 'ArrowRight') nextChapter();
 }
+
+function sentencePieces(text) {
+  const pieces = [];
+  const pattern = /[^。！？!?；;]*[。！？!?；;]+[”’」』】）)]*|[^。！？!?；;]+$/g;
+  for (const match of String(text || '').matchAll(pattern)) {
+    if (match[0].trim()) pieces.push({ text: match[0], start: match.index });
+  }
+  return pieces;
+}
+const displayedParagraphs = computed(() => (chapter.value?.paragraphs || []).map(sentencePieces));
+
+function readingParagraph() {
+  if (window.scrollY < 80) return -1;
+  const paragraphs = document.querySelectorAll('.reader p[data-paragraph]');
+  const readingLine = window.innerHeight * 0.38;
+  for (const paragraph of paragraphs) {
+    if (paragraph.getBoundingClientRect().bottom >= readingLine) return Number(paragraph.dataset.paragraph);
+  }
+  return Math.max(0, paragraphs.length - 1);
+}
+
+async function followParagraph(index) {
+  await nextTick();
+  const bookId = activeBookId();
+  const followedChapter = chapterIndex.value;
+  const selector = index < 0 ? '.chapter-heading' : `.reader p[data-paragraph="${index}"]`;
+  document.querySelector(selector)?.scrollIntoView({ block: 'center', behavior: 'auto' });
+  setTimeout(() => {
+    if (bookId !== activeBookId() || followedChapter !== chapterIndex.value) return;
+    saveLocal();
+    schedulePush();
+  }, 0);
+}
+
+audiobook = useAudiobook({ api, book, chapterIndex, goChapter, readingParagraph, followParagraph, say });
+const listen = audiobook.state;
+const listenActive = audiobook.active;
+const listenProgress = audiobook.chapterProgress;
 
 // ---------- 设置与同步 ----------
 watch(settings, () => storage.setSettings({ ...settings }), { deep: true });
@@ -211,6 +261,7 @@ async function switchBook(bookId, notify = true, broadcast = true) {
     saveLocal();
     void pushNow(previousBookId);
   }
+  audiobook.stop(true);
   clearTimeout(scrollTimer);
   clearTimeout(pushTimer);
 
@@ -323,6 +374,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  audiobook.destroy();
   window.removeEventListener('scroll', onScroll);
   window.removeEventListener('keydown', onKey);
 });
@@ -338,6 +390,7 @@ onBeforeUnmount(() => {
         <div class="chap-title">{{ chapter?.title }}</div>
       </div>
       <button class="icon" @click="toggleNight" :title="isNight ? '日间模式' : '夜间模式'">{{ isNight ? '☀' : '☾' }}</button>
+      <button class="icon" @click="audiobook.open" title="听书" aria-label="听书">♫</button>
       <button class="icon" @click="showSettings = true" title="设置">⚙</button>
     </header>
 
@@ -347,7 +400,12 @@ onBeforeUnmount(() => {
       <template v-else>
         <h2 v-if="chapter?.volume" class="volume">{{ chapter.volume }}</h2>
         <h1 class="chapter-heading">{{ chapter?.title }}</h1>
-        <p v-for="(p, i) in chapter?.paragraphs" :key="i">{{ p }}</p>
+        <p v-for="(pieces, i) in displayedParagraphs" :key="i" :data-paragraph="i"
+          :class="{ 'speaking-paragraph': listenActive && listen.chapter === chapterIndex && listen.playing && listen.segments[listen.segment]?.paragraph === i }"><span v-for="piece in pieces" :key="piece.start"
+            class="reader-sentence" role="button" tabindex="0" title="从这句开始听"
+            :class="{ 'speaking-sentence': listenActive && listen.chapter === chapterIndex && listen.playing && listen.segments[listen.segment]?.paragraph === i && listen.segments[listen.segment]?.start <= piece.start && piece.start < listen.segments[listen.segment]?.end }"
+            @click="audiobook.startAtPosition(i, piece.start)"
+            @keydown.enter.prevent="audiobook.startAtPosition(i, piece.start)">{{ piece.text }}</span></p>
         <div class="chapter-nav">
           <button :disabled="chapterIndex === 0" @click="prevChapter">上一章</button>
           <span>{{ chapterIndex + 1 }} / {{ chapterCount }}</span>
@@ -363,6 +421,68 @@ onBeforeUnmount(() => {
       <button class="txt" @click="settings.fontSize = Math.min(34, settings.fontSize + 1)">A+</button>
       <button class="icon" :disabled="chapterIndex === chapterCount - 1" @click="nextChapter">›</button>
     </footer>
+
+    <div v-if="listen.started && listenActive && !listen.open" class="listen-mini" @click="listen.open = true">
+      <span class="listen-mini-icon">♫</span>
+      <span class="listen-mini-title">{{ book?.chapters[listen.chapter]?.title }} · {{ listen.playing ? '正在朗读' : '已暂停' }}</span>
+      <button @click.stop="audiobook.toggle" :aria-label="listen.playing ? '暂停' : '播放'">{{ listen.playing ? 'Ⅱ' : '▶' }}</button>
+      <button @click.stop="audiobook.stop(true)" aria-label="关闭听书">×</button>
+    </div>
+
+    <div v-if="listen.open" class="listen-screen" role="dialog" aria-label="听书播放器">
+      <div class="listen-head">
+        <button @click="listen.open = false" aria-label="收起播放器">⌄</button>
+        <span>听书</span>
+        <button @click="audiobook.stop(true)" aria-label="关闭听书">×</button>
+      </div>
+      <div class="listen-content">
+        <div class="listen-cover" aria-hidden="true"><span>♫</span><small>{{ book?.title }}</small></div>
+        <div class="listen-book-title">{{ book?.title }}</div>
+        <div class="listen-chapter-title">{{ book?.chapters[listen.chapter]?.title || chapter?.title }}</div>
+        <p class="listen-note">收起播放器，点正文任意一句即可从那句开始听。</p>
+        <div class="listen-position">{{ listen.segments.length ? `第 ${listen.segment + 1} / ${listen.segments.length} 段` : '从当前阅读位置开始' }}</div>
+        <input class="listen-seek" type="range" min="0" :max="Math.max(0, listen.segments.length - 1)"
+          :value="listen.segment" :disabled="!listenActive" aria-label="跳转朗读段落"
+          @change="audiobook.seekSegment(Number($event.target.value))" />
+        <div class="listen-times"><span>{{ formatAudioTime(listen.currentTime) }} / {{ formatAudioTime(listen.duration) }}</span><span>本章 {{ listenProgress }}%</span></div>
+        <div class="listen-controls">
+          <button :disabled="!listenActive || listen.chapter === 0" @click="audiobook.jumpChapter(-1)" aria-label="上一章">|‹</button>
+          <button :disabled="!listenActive" @click="audiobook.skipSeconds(-15)" aria-label="后退十五秒">↺<small>15</small></button>
+          <button class="listen-play" :disabled="listen.checking" @click="audiobook.toggle" :aria-label="listen.playing ? '暂停' : '播放'">{{ listen.loading ? '…' : listen.playing ? 'Ⅱ' : '▶' }}</button>
+          <button :disabled="!listenActive" @click="audiobook.skipSeconds(15)" aria-label="前进十五秒">↻<small>15</small></button>
+          <button :disabled="!listenActive || listen.chapter >= chapterCount - 1" @click="audiobook.jumpChapter(1)" aria-label="下一章">›|</button>
+        </div>
+        <p v-if="listen.error" class="listen-error">{{ listen.error }}</p>
+        <p v-else-if="!listen.checking && !listen.enabled" class="listen-error">听书服务尚未配置，请在服务器设置阿里云密钥与听书密码。</p>
+        <div class="listen-options">
+          <label>音色
+            <select :value="listen.voice" @change="audiobook.setVoice($event.target.value)">
+              <option v-for="voice in listen.voices" :key="voice.id" :value="voice.id">{{ voice.name }}</option>
+            </select>
+          </label>
+          <label>倍速
+            <select :value="listen.rate" @change="audiobook.setRate($event.target.value)">
+              <option v-for="rate in [0.75, 1, 1.25, 1.5, 1.75, 2]" :key="rate" :value="rate">{{ rate }}×</option>
+            </select>
+          </label>
+          <label>定时关闭
+            <select :value="listen.sleep" @change="audiobook.setSleep($event.target.value)">
+              <option value="off">不开启</option>
+              <option value="chapter">本章结束</option>
+              <option value="15">15 分钟</option>
+              <option value="30">30 分钟</option>
+              <option value="60">60 分钟</option>
+            </select>
+          </label>
+        </div>
+        <p v-if="listen.remaining" class="listen-note">{{ Math.ceil(listen.remaining / 60) }} 分钟后暂停</p>
+        <label class="listen-access">听书密码
+          <input type="password" autocomplete="off" :value="listen.accessCode"
+            placeholder="服务器设置的 TTS_ACCESS_CODE" @input="audiobook.setAccessCode($event.target.value)" />
+        </label>
+        <p class="listen-note">音频由阿里云按段生成；已生成内容由服务器缓存。本次新合成约 ¥{{ listen.cost.toFixed(4) }}。</p>
+      </div>
+    </div>
 
     <div v-if="showToc" class="drawer-mask" @click.self="showToc = false">
       <aside class="drawer">

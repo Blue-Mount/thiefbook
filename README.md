@@ -64,6 +64,20 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/status.ps1
 
 公网地址依赖电脑已开机、Windows 用户已登录，以及 Microsoft 登录会话仍可续签。若账户要求重新交互登录，需在桌面运行 `devtunnel user login`，然后守护进程会自动重连。
 
+## 网页听书（阿里云语音）
+
+手机或电脑浏览器打开阅读器，点顶部 **♫ 听书**，可以从当前阅读位置朗读。收起播放器后，点正文中的任意一句可从那句开始听；朗读位置会写入本地并随阅读进度同步，在其他网页设备上继续听时恢复到对应句。播放器支持自动续章、逐句跟读、前后跳转 15 秒、0.75～2 倍速、切换音色、定时关闭以及手机锁屏媒体控制。桌面端 Electron 小窗不启用听书。
+
+听书需要在运行同步服务的电脑上配置阿里云百炼华北2（北京）的 API Key 和业务空间 ID。复制 `server/.env.example` 为 `server/.env`，填写：
+
+```dotenv
+DASHSCOPE_API_KEY=你的百炼APIKey
+SFM_WORKSPACE_ID=你的业务空间ID
+TTS_ACCESS_CODE=自己设置的一段听书密码
+```
+
+重启同步服务后，在每台设备的听书面板填写同一个听书密码。API Key 只保存在服务端，不会发送到浏览器或 Git。服务端仅接受书库中现有正文的朗读请求，按段生成 `qwen-audio-3.1-tts-flash` 音频，并将结果缓存在 `server/data/tts-cache`（或 `DATA_DIR/tts-cache`），缓存上限 512 MB。面板显示本次新合成的估算模型费用；阿里云实际账单以百炼控制台为准。没有配置密钥时，阅读与同步仍可正常使用。
+
 ## 四、上云部署（免费 + 进度持久化，Fly.io 方案）
 
 已备好 `Dockerfile` 和 `fly.toml`（含持久化卷，香港节点）。

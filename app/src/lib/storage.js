@@ -4,6 +4,7 @@ const K = {
   sync: 'thiefbook:sync',
   device: 'thiefbook:device',
   currentBook: 'thiefbook:current-book',
+  listening: 'thiefbook:listening',
   progress: (bookId) => `thiefbook:progress:${bookId}`,
 };
 
@@ -26,6 +27,9 @@ export const storage = {
 
   getSync: () => read(K.sync, { serverUrl: '', code: '' }),
   setSync: (s) => write(K.sync, s),
+
+  getListening: () => read(K.listening, { voice: 'longyuan_v3.1', rate: 1, accessCode: '' }),
+  setListening: (s) => write(K.listening, s),
 
   getProgress: (bookId) => read(K.progress(bookId), null),
   setProgress: (bookId, p) => write(K.progress(bookId), p),

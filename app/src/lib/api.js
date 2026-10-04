@@ -82,5 +82,33 @@ export function makeApi(getSync) {
     return body;
   }
 
-  return { pull, push, health, listBooks, uploadBook, pullCurrentBook, pushCurrentBook };
+  async function ttsConfig() {
+    const r = await request(`${base()}/api/tts/config`, { cache: 'no-store' });
+    if (!r.ok) throw new Error('听书服务不可用');
+    return r.json();
+  }
+
+  async function ttsSegments(book, chapter) {
+    const url = `${base()}/api/tts/segments?book=${encodeURIComponent(book)}&chapter=${chapter}`;
+    const r = await request(url, { cache: 'no-store' });
+    if (!r.ok) throw new Error('无法读取朗读章节');
+    return (await r.json()).segments;
+  }
+
+  async function ttsAudio(book, chapter, segment, voice, code, signal) {
+    const r = await fetch(`${base()}/api/tts/audio`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ book, chapter, segment, voice, code }),
+      signal,
+    });
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      throw new Error(body.error || `语音请求失败（${r.status}）`);
+    }
+    return { blob: await r.blob(), cost: Number(r.headers.get('X-TTS-Cost-CNY')) || 0 };
+  }
+
+  return { pull, push, health, listBooks, uploadBook, pullCurrentBook, pushCurrentBook,
+    ttsConfig, ttsSegments, ttsAudio };
 }

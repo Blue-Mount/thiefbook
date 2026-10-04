@@ -5,7 +5,12 @@ import cors from 'cors';
 import compression from 'compression';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { makeStore } from './storage.js';
+import { makeAudiobookRouter } from './audiobook.js';
+
+const envFile = path.join(path.dirname(fileURLToPath(import.meta.url)), '.env');
+if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
 
 const PORT = process.env.PORT || 8787;
 const STATIC_DIR = process.env.STATIC_DIR || path.resolve(process.cwd(), '..', 'app', 'dist');
@@ -26,6 +31,7 @@ app.use(compression());
 app.use(express.json({ limit: '64kb' }));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: Date.now() }));
+app.use('/api/tts', makeAudiobookRouter({ booksDir: BOOKS_DIR, builtinBooksDir: BUILTIN_BOOKS_DIR, dataDir: DATA_DIR }));
 
 // 拉取某本书的进度
 app.get('/api/progress', async (req, res) => {
@@ -36,7 +42,7 @@ app.get('/api/progress', async (req, res) => {
 
 // 上报进度（last-write-wins）
 app.post('/api/progress', async (req, res) => {
-  const { code, book, chapter, percent, updatedAt, device } = req.body || {};
+  const { code, book, chapter, percent, updatedAt, device, mode, segment } = req.body || {};
   if (!isValidCode(code) || !book || typeof chapter !== 'number')
     return res.status(400).json({ error: 'bad params' });
   const incoming = {
@@ -46,6 +52,10 @@ app.post('/api/progress', async (req, res) => {
     updatedAt: Number(updatedAt) || Date.now(),
     device: String(device || 'unknown').slice(0, 40),
   };
+  if (mode === 'audio' && Number.isInteger(segment) && segment >= 0) {
+    incoming.mode = 'audio';
+    incoming.segment = segment;
+  }
   const existing = await store.get(code, book);
   if (existing && existing.updatedAt > incoming.updatedAt) {
     console.log(JSON.stringify({
