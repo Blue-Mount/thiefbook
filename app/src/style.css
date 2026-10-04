@@ -55,6 +55,8 @@ button:disabled { opacity: .35; cursor: default; }
 .chapter-nav button { padding: 8px 18px; border: 1px solid var(--line); border-radius: 8px; }
 .hint { text-align: center; color: var(--sub); padding: 60px 0; }
 .hint.error { color: var(--accent); }
+.retry-book { margin-top: 18px; padding: 9px 20px; border: 1px solid var(--accent);
+  border-radius: 8px; color: var(--accent); }
 
 /* 抽屉/弹窗 */
 .drawer-mask { position: fixed; inset: 0; z-index: 40; background: rgba(0,0,0,.4); display: flex; }

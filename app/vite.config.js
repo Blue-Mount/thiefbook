@@ -33,7 +33,7 @@ export default defineConfig({
             handler: 'NetworkFirst',
             options: {
               cacheName: 'books-v2',
-              networkTimeoutSeconds: 30,
+              networkTimeoutSeconds: 90,
               expiration: { maxEntries: 20 },
             },
           },

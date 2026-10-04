@@ -278,13 +278,14 @@ async function switchBook(bookId, notify = true, broadcast = true) {
   window.scrollTo({ top: 0, behavior: 'auto' });
 
   try {
-    // Versioned URL bypasses stale CacheFirst entries created by older PWA builds.
+    // Versioned URL bypasses old service-worker entries while normal HTTP caching
+    // lets the browser revalidate large books instead of downloading them on every open.
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
+    // Large uploaded novels can take much longer over a mobile tunnel connection.
+    const timer = setTimeout(() => controller.abort(), 120000);
     let loaded;
     try {
-      const r = await fetch(`./books/${encodeURIComponent(bookId)}.json?v=2`, {
-        cache: 'no-store',
+      const r = await fetch(`./books/${encodeURIComponent(bookId)}.json?v=3`, {
         signal: controller.signal,
       });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -305,7 +306,9 @@ async function switchBook(bookId, notify = true, broadcast = true) {
     if (bookId !== activeBookId()) return;
     book.value = null;
     loading.value = false;
-    loadError.value = '书籍加载失败：' + e.message;
+    loadError.value = e.name === 'AbortError'
+      ? '书籍下载超时，请检查网络后重试'
+      : '书籍加载失败：' + e.message;
   }
 }
 
@@ -395,8 +398,11 @@ onBeforeUnmount(() => {
     </header>
 
     <main class="reader" :style="{ fontSize: settings.fontSize + 'px', lineHeight: settings.lineHeight, letterSpacing: settings.letterSpacing + 'px' }">
-      <div v-if="loading" class="hint">正在加载小说…</div>
-      <div v-else-if="loadError" class="hint error">{{ loadError }}</div>
+      <div v-if="loading" class="hint">正在加载小说…大文件可能需要一些时间</div>
+      <div v-else-if="loadError" class="hint error">
+        <div>{{ loadError }}</div>
+        <button class="retry-book" @click="switchBook(activeBookId(), false, false)">重试加载</button>
+      </div>
       <template v-else>
         <h2 v-if="chapter?.volume" class="volume">{{ chapter.volume }}</h2>
         <h1 class="chapter-heading">{{ chapter?.title }}</h1>
