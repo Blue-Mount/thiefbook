@@ -12,13 +12,21 @@ npm start
 
 首次启动会从同步服务下载《覆汉》并缓存到本地（之后离线也能读、秒开）。
 
-## 打包成免安装 exe（可选）
+## 生成 Windows 发布版
 
-```bash
-npm run dist     # 产物在 desktop/dist/thiefbook-desktop-1.0.0.exe
+```powershell
+cd desktop
+npm run dist
 ```
 
-双击即用，绿色免安装，最贴合摸鱼场景。
+本机有 CDGServer3 企业加密，不能直接执行原始 `electron-builder` 命令。上面的固定流程会：
+
+1. 构建前解密并校验实际参与打包的源码，防止把密文字节封进产物。
+2. 强制使用 `asar=false` 的完整 `win-unpacked` 目录。
+3. 构建后再次逐文件解密，要求全部 `OK` 且 SHA-256 校验一致。
+4. 对发布目录中的 JavaScript 执行语法检查，并自动更新桌面 `book.lnk`。
+
+产物位于 `desktop/dist-release/<版本号>/win-unpacked`。必须保留完整目录，不要只复制其中的 `thiefbook.exe`。
 
 ## 用法
 

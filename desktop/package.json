@@ -1,11 +1,11 @@
 {
   "name": "thiefbook-desktop",
-  "version": "1.1.2",
+  "version": "1.1.3",
   "description": "摸鱼看书 · Win11 桌面隐蔽阅读器（Electron）",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "dist": "electron-builder --win portable"
+    "dist": "pwsh.exe -NoProfile -File ./build-release.ps1"
   },
   "author": "",
   "license": "MIT",
@@ -15,6 +15,7 @@
   },
   "build": {
     "appId": "com.bluemount.thiefbook",
+    "asar": false,
     "productName": "thiefbook",
     "files": [
       "main.js",
@@ -29,11 +30,7 @@
       }
     ],
     "win": {
-      "target": "portable",
       "signAndEditExecutable": false
-    },
-    "portable": {
-      "artifactName": "thiefbook-desktop-${version}.exe"
     }
   }
 }
