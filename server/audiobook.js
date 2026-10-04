@@ -4,6 +4,7 @@ import path from 'node:path';
 import express from 'express';
 
 export const TTS_VOICES = [
+  { id: 'xuyuyuan_v3.1', name: '许玉远 · 知性女声' },
   { id: 'longyuan_v3.1', name: '龙媛 · 温暖女声' },
   { id: 'longsanshu_v3.1', name: '龙三叔 · 沉稳男声' },
   { id: 'anmingyuan_v3.1', name: '安明远 · 清亮男声' },

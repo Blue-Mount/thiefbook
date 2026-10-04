@@ -14,7 +14,7 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
     enabled: false,
     checking: false,
     voices: [],
-    voice: saved.voice || 'longyuan_v3.1',
+    voice: saved.voice === 'longyuan_v3.1' ? 'xuyuyuan_v3.1' : saved.voice || 'xuyuyuan_v3.1',
     rate: Number(saved.rate) || 1,
     accessCode: saved.accessCode || '',
     segments: [],

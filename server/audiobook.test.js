@@ -78,7 +78,7 @@ test('sentence offsets identify the exact sentence within a paragraph', () => {
 test('audio endpoint accepts only book segments and caches generated audio', async () => {
   const segments = await (await fetch(`${base}/segments?book=sample&chapter=0`)).json();
   assert.equal(segments.segments.length, 4);
-  const payload = { book: 'sample', chapter: 0, segment: 1, voice: 'longyuan_v3.1' };
+  const payload = { book: 'sample', chapter: 0, segment: 1, voice: 'xuyuyuan_v3.1' };
   const post = (body) => fetch(`${base}/audio`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
