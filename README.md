@@ -48,7 +48,23 @@ node scripts/build-book.mjs "你的小说.txt" mybook
 ```
 会在 `app/public/books/mybook.json` 生成数据（编码自动识别）。目前前端写死读 `fuhan`，多书书架在下一阶段做。
 
-## 三、上云部署（免费 + 进度持久化，Fly.io 方案）
+## 三、Windows 本机常驻服务
+
+如果用这台 Windows 电脑托管阅读器和 Dev Tunnel 公网地址，在登录 Windows 后运行一次：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/install-autostart.ps1
+```
+
+此脚本安装服务器计划任务和登录后启动的隧道守护进程。守护进程会检查本地及公网健康状态，连接断开时重启，并在 Dev Tunnel 凭据过期时尝试用当前 Windows 会话自动续签。查看状态：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/status.ps1
+```
+
+公网地址依赖电脑已开机、Windows 用户已登录，以及 Microsoft 登录会话仍可续签。若账户要求重新交互登录，需在桌面运行 `devtunnel user login`，然后守护进程会自动重连。
+
+## 四、上云部署（免费 + 进度持久化，Fly.io 方案）
 
 已备好 `Dockerfile` 和 `fly.toml`（含持久化卷，香港节点）。
 

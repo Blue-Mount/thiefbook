@@ -10,13 +10,6 @@ $instanceMutex = New-Object System.Threading.Mutex($true, 'Local\ThiefBookTunnel
 
 if (-not $createdNew) { exit 0 }
 
-# Task Scheduler may keep an old environment block for an already-running
-# logon session.  Reload the user's proxy settings explicitly so devtunnel can
-# refresh its Microsoft sign-in token after Windows restarts.
-$userEnvironment = Get-ItemProperty 'HKCU:\Environment' -ErrorAction SilentlyContinue
-if ($userEnvironment.http_proxy) { $env:http_proxy = [string]$userEnvironment.http_proxy }
-if ($userEnvironment.https_proxy) { $env:https_proxy = [string]$userEnvironment.https_proxy }
-
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 function Write-SupervisorLog([string]$message) {
@@ -33,6 +26,38 @@ function Find-DevTunnel {
     Select-Object -First 1
   if ($match) { return $match }
   throw 'devtunnel.exe was not found'
+}
+
+function Sync-UserProxyEnvironment {
+  # A long-running supervisor keeps the environment block from when it was
+  # launched. Reload proxy settings before every reconnect so devtunnel can
+  # refresh its Microsoft token after the user's network settings change.
+  $userEnvironment = Get-ItemProperty 'HKCU:\Environment' -ErrorAction SilentlyContinue
+  if ($userEnvironment.http_proxy) { $env:http_proxy = [string]$userEnvironment.http_proxy }
+  if ($userEnvironment.https_proxy) { $env:https_proxy = [string]$userEnvironment.https_proxy }
+}
+
+function Invoke-IntegratedLogin([string]$devTunnel) {
+  $loginStdout = Join-Path $logDir 'tunnel-login.out.log'
+  $loginStderr = Join-Path $logDir 'tunnel-login.err.log'
+  Write-SupervisorLog 'refreshing Microsoft tunnel credentials'
+  $login = Start-Process -FilePath $devTunnel -ArgumentList @('user', 'login', '--use-integrated-windows-auth') `
+    -WindowStyle Hidden -RedirectStandardOutput $loginStdout -RedirectStandardError $loginStderr -PassThru
+  if (-not $login.WaitForExit(30000)) {
+    Stop-Process -Id $login.Id -Force -ErrorAction SilentlyContinue
+    Write-SupervisorLog 'credential refresh timed out'
+    return $false
+  }
+  $login.WaitForExit()
+  $login.Refresh()
+  $output = if (Test-Path -LiteralPath $loginStdout) { Get-Content -LiteralPath $loginStdout -Raw } else { '' }
+  $errorOutput = if (Test-Path -LiteralPath $loginStderr) { Get-Content -LiteralPath $loginStderr -Raw } else { '' }
+  if ($login.ExitCode -ne 0 -or $output -notmatch 'Logged in as' -or -not [string]::IsNullOrWhiteSpace($errorOutput)) {
+    Write-SupervisorLog "credential refresh failed (exit code $($login.ExitCode))"
+    return $false
+  }
+  Write-SupervisorLog 'Microsoft tunnel credentials refreshed'
+  return $true
 }
 
 function Invoke-TunnelRenewal([string]$devTunnel) {
@@ -72,18 +97,26 @@ function Invoke-TunnelRenewal([string]$devTunnel) {
   return $true
 }
 
+$nextRenewal = (Get-Date).AddDays(7)
+$nextLoginAttempt = Get-Date
+$lastLoginAttempt = (Get-Date).AddDays(-1)
 while ($true) {
   try {
+    Sync-UserProxyEnvironment
+
     Get-ChildItem -LiteralPath $logDir -Filter 'tunnel-run-*.log' -File -ErrorAction SilentlyContinue |
       Where-Object LastWriteTime -lt (Get-Date).AddDays(-30) |
       Remove-Item -Force
 
     $devTunnel = Find-DevTunnel
-    # Renewal is useful, but it must never prevent the public endpoint from
-    # coming online after Windows starts.  The CLI can hang here while the
-    # proxy/network stack is still warming up after sign-in.
-    $renewalSucceeded = Invoke-TunnelRenewal $devTunnel
 
+    # The cached identity can be present while its relay token has expired.
+    # Refresh it in this same desktop session before trying to host again.
+    if ((Get-Date) -ge $nextLoginAttempt) {
+      $lastLoginAttempt = Get-Date
+      $loginSucceeded = Invoke-IntegratedLogin $devTunnel
+      $nextLoginAttempt = if ($loginSucceeded) { (Get-Date).AddHours(12) } else { (Get-Date).AddMinutes(5) }
+    }
     while ($true) {
       try {
         $local = Invoke-RestMethod -Uri $localHealthUrl -TimeoutSec 5
@@ -103,7 +136,6 @@ while ($true) {
 
     # devtunnel can remain alive while its SSH forwarding window is wedged.
     # Probe the actual public path and recycle the host after consecutive failures.
-    $nextRenewal = if ($renewalSucceeded) { (Get-Date).AddDays(7) } else { (Get-Date).AddHours(1) }
     $failedPublicChecks = 0
     while (-not $process.HasExited) {
       try {
@@ -127,6 +159,11 @@ while ($true) {
     }
 
     $process.WaitForExit()
+    $hostError = if (Test-Path -LiteralPath $stderrLog) { Get-Content -LiteralPath $stderrLog -Raw } else { '' }
+    if ($hostError -match '(?i)Unauthorized|Login required') {
+      Write-SupervisorLog 'tunnel host rejected credentials; scheduling refresh'
+      $nextLoginAttempt = $lastLoginAttempt.AddMinutes(5)
+    }
     Write-SupervisorLog "dev tunnel exited pid=$($process.Id) code=$($process.ExitCode); retrying in 10 seconds"
   } catch {
     Write-SupervisorLog "supervisor error: $($_.Exception.Message); retrying in 15 seconds"
