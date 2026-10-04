@@ -8,6 +8,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeStore } from './storage.js';
 import { makeAudiobookRouter } from './audiobook.js';
+import { makeBookContentRouter } from './book-content.js';
 
 const envFile = path.join(path.dirname(fileURLToPath(import.meta.url)), '.env');
 if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
@@ -32,6 +33,7 @@ app.use(express.json({ limit: '64kb' }));
 
 app.get('/api/health', (_req, res) => res.json({ ok: true, time: Date.now() }));
 app.use('/api/tts', makeAudiobookRouter({ booksDir: BOOKS_DIR, builtinBooksDir: BUILTIN_BOOKS_DIR, dataDir: DATA_DIR }));
+app.use('/api/book-content', makeBookContentRouter({ booksDir: BOOKS_DIR, builtinBooksDir: BUILTIN_BOOKS_DIR }));
 
 // 拉取某本书的进度
 app.get('/api/progress', async (req, res) => {

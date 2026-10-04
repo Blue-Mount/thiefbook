@@ -260,7 +260,7 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
     if (next < 0 || next >= (book.value?.chapters.length || 0)) return;
     cancelLoad();
     clearAudio();
-    goChapter(next, 0, true, true, true);
+    if (!await goChapter(next, 0, true, true, true)) return;
     if (await loadChapter(next)) await playSegment(0);
   }
 

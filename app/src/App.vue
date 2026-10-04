@@ -28,6 +28,7 @@ let toastTimer = null;
 const chapter = computed(() => book.value?.chapters[chapterIndex.value] || null);
 const chapterCount = computed(() => book.value?.chapters.length || 0);
 let audiobook;
+let bookLoadSerial = 0;
 
 function activeBookId() {
   return currentBookId.value;
@@ -82,7 +83,7 @@ async function pushNow(bookId = activeBookId()) {
     const res = await api.push(bookId, progress, device);
     if (bookId !== activeBookId()) return;
     if (res.skipped) { syncStatus.value = 'local'; return; }
-    if (res.accepted === false && res.current) applyRemote(res.current, true);
+    if (res.accepted === false && res.current) await applyRemote(res.current, true);
     syncStatus.value = 'ok';
   } catch {
     if (bookId === activeBookId()) syncStatus.value = 'error';
@@ -91,7 +92,7 @@ async function pushNow(bookId = activeBookId()) {
 }
 
 // ---------- 应用远端进度 ----------
-function applyRemote(remote, notify) {
+async function applyRemote(remote, notify) {
   if (!remote || remote.book !== activeBookId()) return false;
   const local = storage.getProgress(activeBookId());
   const localTs = local?.updatedAt || 0;
@@ -99,9 +100,9 @@ function applyRemote(remote, notify) {
   const samePos = local && local.chapter === remote.chapter &&
     Math.abs((local.percent || 0) - (remote.percent || 0)) < 0.01 &&
     local.mode === remote.mode && local.segment === remote.segment;
+  if (!samePos && !await goChapter(remote.chapter, remote.percent, false, false)) return false;
   storage.setProgress(activeBookId(), { ...remote, device: remote.device });
   if (samePos) return false;
-  goChapter(remote.chapter, remote.percent, false, false);
   if (notify) say(`已从「${remote.device || '云端'}」同步到 ${chapterTitle(remote.chapter)}`);
   return true;
 }
@@ -111,19 +112,39 @@ function chapterTitle(idx) {
 }
 
 // ---------- 章节跳转 ----------
-function goChapter(idx, percent = 0, resetScroll = true, persist = true, fromAudio = false) {
-  if (idx < 0 || idx >= chapterCount.value) return;
+async function goChapter(idx, percent = 0, resetScroll = true, persist = true, fromAudio = false) {
+  if (idx < 0 || idx >= chapterCount.value) return false;
+  if (persist && idx !== chapterIndex.value) {
+    saveLocal();
+    schedulePush();
+  }
   if (!fromAudio && idx !== chapterIndex.value) audiobook?.stop();
+  const targetBook = book.value;
+  const targetBookId = activeBookId();
+  if (!targetBook.chapters[idx]?.paragraphs) {
+    loading.value = true;
+    try {
+      const content = await api.bookChapter(targetBookId, idx);
+      if (book.value !== targetBook || activeBookId() !== targetBookId) return false;
+      targetBook.chapters[idx] = content;
+    } catch (error) {
+      if (book.value === targetBook) say('章节加载失败：' + bookRequestError(error));
+      return false;
+    } finally {
+      if (book.value === targetBook) loading.value = false;
+    }
+  }
+  if (book.value !== targetBook) return false;
   chapterIndex.value = idx;
   showToc.value = false;
-  nextTick(() => {
-    if (resetScroll && !percent) window.scrollTo({ top: 0, behavior: 'auto' });
-    else scrollToPercent(percent);
-    if (persist) {
-      saveLocal();
-      schedulePush();
-    }
-  });
+  await nextTick();
+  if (resetScroll && !percent) window.scrollTo({ top: 0, behavior: 'auto' });
+  else scrollToPercent(percent);
+  if (persist) {
+    saveLocal();
+    schedulePush();
+  }
+  return true;
 }
 const prevChapter = () => goChapter(chapterIndex.value - 1);
 const nextChapter = () => goChapter(chapterIndex.value + 1);
@@ -176,6 +197,12 @@ function sentencePieces(text) {
 }
 const displayedParagraphs = computed(() => (chapter.value?.paragraphs || []).map(sentencePieces));
 
+function bookRequestError(error) {
+  return error?.name === 'AbortError' || /aborted|abort/i.test(error?.message || '')
+    ? '网络请求中断，请重试'
+    : error?.message || '未知错误';
+}
+
 function readingParagraph() {
   if (window.scrollY < 80) return -1;
   const paragraphs = document.querySelectorAll('.reader p[data-paragraph]');
@@ -221,7 +248,7 @@ async function refreshSync() {
   try {
     const remote = await api.pull(bookId);
     if (bookId !== activeBookId()) return;
-    const adopted = applyRemote(remote, true);
+    const adopted = await applyRemote(remote, true);
     syncStatus.value = 'ok';
     if (!adopted) {
       if (!remote) say('云端本书暂无进度（先在另一台读几章并保存）');
@@ -257,6 +284,7 @@ async function switchBook(bookId, notify = true, broadcast = true) {
   }
 
   const previousBookId = activeBookId();
+  const serial = ++bookLoadSerial;
   if (book.value) {
     saveLocal();
     void pushNow(previousBookId);
@@ -278,37 +306,26 @@ async function switchBook(bookId, notify = true, broadcast = true) {
   window.scrollTo({ top: 0, behavior: 'auto' });
 
   try {
-    // Versioned URL bypasses old service-worker entries while normal HTTP caching
-    // lets the browser revalidate large books instead of downloading them on every open.
-    const controller = new AbortController();
-    // Large uploaded novels can take much longer over a mobile tunnel connection.
-    const timer = setTimeout(() => controller.abort(), 120000);
-    let loaded;
-    try {
-      const r = await fetch(`./books/${encodeURIComponent(bookId)}.json?v=3`, {
-        signal: controller.signal,
-      });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      loaded = await r.json();
-    } finally {
-      clearTimeout(timer);
-    }
-    if (bookId !== activeBookId()) return;
-    book.value = loaded;
+    const loaded = await api.bookManifest(bookId);
+    if (serial !== bookLoadSerial || bookId !== activeBookId()) return;
+    if (!Array.isArray(loaded.chapters) || !loaded.chapters.length) throw new Error('书籍目录为空');
+    loaded.toc = loaded.chapters.map(({ id, title, volume }) => ({ id, title, volume }));
     const local = storage.getProgress(bookId);
-    chapterIndex.value = Math.max(0, Math.min(local?.chapter || 0, loaded.chapters.length - 1));
+    const initialChapter = Math.max(0, Math.min(local?.chapter || 0, loaded.chapters.length - 1));
+    loaded.chapters[initialChapter] = await api.bookChapter(bookId, initialChapter);
+    if (serial !== bookLoadSerial || bookId !== activeBookId()) return;
+    book.value = loaded;
+    chapterIndex.value = initialChapter;
     loading.value = false;
     await nextTick();
     scrollToPercent(local?.percent || 0);
     if (notify) say(`已切换到《${loaded.title}》，并恢复阅读进度`);
     refreshSync();
   } catch (e) {
-    if (bookId !== activeBookId()) return;
+    if (serial !== bookLoadSerial || bookId !== activeBookId()) return;
     book.value = null;
     loading.value = false;
-    loadError.value = e.name === 'AbortError'
-      ? '书籍下载超时，请检查网络后重试'
-      : '书籍加载失败：' + e.message;
+    loadError.value = '书籍加载失败：' + bookRequestError(e);
   }
 }
 
@@ -398,7 +415,7 @@ onBeforeUnmount(() => {
     </header>
 
     <main class="reader" :style="{ fontSize: settings.fontSize + 'px', lineHeight: settings.lineHeight, letterSpacing: settings.letterSpacing + 'px' }">
-      <div v-if="loading" class="hint">正在加载小说…大文件可能需要一些时间</div>
+      <div v-if="loading" class="hint">正在加载章节…</div>
       <div v-else-if="loadError" class="hint error">
         <div>{{ loadError }}</div>
         <button class="retry-book" @click="switchBook(activeBookId(), false, false)">重试加载</button>

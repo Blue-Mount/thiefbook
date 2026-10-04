@@ -54,6 +54,20 @@ export function makeApi(getSync) {
     return r.json();
   }
 
+  async function bookManifest(bookId) {
+    const r = await request(`${base()}/api/book-content/${encodeURIComponent(bookId)}/manifest`,
+      { cache: 'no-cache' }, 45000);
+    if (!r.ok) throw new Error(`书籍目录请求失败（${r.status}）`);
+    return r.json();
+  }
+
+  async function bookChapter(bookId, index) {
+    const r = await request(`${base()}/api/book-content/${encodeURIComponent(bookId)}/chapters/${index}`,
+      { cache: 'no-cache' }, 45000);
+    if (!r.ok) throw new Error(`章节请求失败（${r.status}）`);
+    return r.json();
+  }
+
   async function pullCurrentBook() {
     const r = await request(`${base()}/api/current-book?code=${encodeURIComponent(theCode())}`, { cache: 'no-store' });
     if (!r.ok) throw new Error('pull current book failed ' + r.status);
@@ -109,6 +123,6 @@ export function makeApi(getSync) {
     return { blob: await r.blob(), cost: Number(r.headers.get('X-TTS-Cost-CNY')) || 0 };
   }
 
-  return { pull, push, health, listBooks, uploadBook, pullCurrentBook, pushCurrentBook,
+  return { pull, push, health, listBooks, bookManifest, bookChapter, uploadBook, pullCurrentBook, pushCurrentBook,
     ttsConfig, ttsSegments, ttsAudio };
 }
