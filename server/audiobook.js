@@ -46,7 +46,9 @@ export function speechPieces(text) {
     }
     const raw = source.slice(offsets[start], offsets[end]);
     const text = raw.trim();
-    if (text) parts.push({ text, start: offsets[start], end: offsets[end] });
+    // Standalone punctuation (for example a paragraph containing only “……”)
+    // cannot be synthesized and would stop playback at the next segment.
+    if (/[\p{L}\p{N}]/u.test(text)) parts.push({ text, start: offsets[start], end: offsets[end] });
     start = end;
   }
   return parts;

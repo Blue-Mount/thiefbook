@@ -75,6 +75,15 @@ test('sentence offsets identify the exact sentence within a paragraph', () => {
   assert.equal(segments[1].start, paragraph.indexOf('第二句'));
 });
 
+test('punctuation-only segments are skipped without shifting text offsets', () => {
+  const chapter = { title: '第一章', paragraphs: ['前一句。……', '……', '铛！', '后一句。'] };
+  const segments = chapterSegments(chapter);
+  assert.deepEqual(segments.map((part) => part.text), ['第一章', '前一句。', '铛！', '后一句。']);
+  assert.deepEqual(segments.map((part) => part.paragraph), [-1, 0, 2, 3]);
+  assert.equal(segments[1].start, 0);
+  assert.equal(segments[1].end, 4);
+});
+
 test('audio endpoint accepts only book segments and caches generated audio', async () => {
   const segments = await (await fetch(`${base}/segments?book=sample&chapter=0`)).json();
   assert.equal(segments.segments.length, 4);
