@@ -1,5 +1,6 @@
 import { computed, reactive } from 'vue';
-import { storage } from './storage';
+import { storage } from './storage.js';
+import { SentenceStream } from './audio-stream.js';
 
 export function formatAudioTime(value) {
   if (!Number.isFinite(value)) return '0:00';
@@ -44,6 +45,10 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
   let nextPromise = null;
   let nextIndex = -1;
   let objectUrl = null;
+  let stream = null;
+  let streamAbort = null;
+  let streamFill = null;
+  let streamFailed = false;
 
   function savePreferences() {
     storage.setListening({ voice: state.voice, rate: state.rate, accessCode: state.accessCode });
@@ -57,6 +62,12 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
   }
 
   function clearAudio() {
+    streamAbort?.abort();
+    streamAbort = null;
+    streamFill = null;
+    streamFailed = false;
+    stream?.destroy();
+    stream = null;
     audio.pause();
     audio.removeAttribute('src');
     audio.load();
@@ -145,11 +156,36 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
   }
 
   function prefetchNext() {
+    if (stream) { fillStream(); return; }
     const index = state.segment + 1;
     if (nextPromise || index >= state.segments.length || !state.playing) return;
     nextIndex = index;
     nextAbort = new AbortController();
     nextPromise = fetchSegment(index, nextAbort.signal).catch(() => null);
+  }
+
+  function fillStream() {
+    if (!stream || streamFill || streamFailed || !state.playing) return;
+    const target = stream;
+    const controller = new AbortController();
+    streamAbort = controller;
+    const task = (async () => {
+      let index = target.parts.at(-1).index + 1;
+      while (stream === target && state.playing && index < state.segments.length && index <= state.segment + 3) {
+        const blob = await fetchSegment(index, controller.signal);
+        if (stream !== target || controller.signal.aborted) return;
+        await target.append(blob, index++);
+      }
+      if (stream === target && index === state.segments.length) target.finish();
+    })().catch((error) => {
+      if (stream === target && error.name !== 'AbortError') {
+        streamFailed = true;
+        state.error = error.message;
+      }
+    }).finally(() => {
+      if (streamFill === task) { streamFill = null; streamAbort = null; }
+    });
+    streamFill = task;
   }
 
   async function playSegment(index) {
@@ -174,8 +210,16 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
         : fetchSegment(index, currentAbort.signal));
       if (serial !== generation) return;
       if (!blob) throw new Error('语音预加载失败');
-      objectUrl = URL.createObjectURL(blob);
-      audio.src = objectUrl;
+      if (SentenceStream.supported()) {
+        const target = new SentenceStream(audio);
+        stream = target;
+        await target.append(blob, index);
+        if (serial !== generation) return;
+        if (index === state.segments.length - 1) target.finish();
+      } else {
+        objectUrl = URL.createObjectURL(blob);
+        audio.src = objectUrl;
+      }
       audio.playbackRate = state.rate;
       await audio.play();
       if (serial !== generation) return;
@@ -183,6 +227,7 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
       state.playing = true;
       followParagraph(state.segments[index].paragraph);
       updateMediaSession();
+      prefetchNext();
     } catch (error) {
       if (serial !== generation) return;
       state.error = error.name === 'NotAllowedError' ? '请再点一次播放，浏览器需要确认播放手势' : error.message;
@@ -204,6 +249,8 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
         await audio.play();
         state.playing = true;
         state.error = '';
+        streamFailed = false;
+        prefetchNext();
       } catch (error) {
         state.error = error.message;
       }
@@ -215,8 +262,10 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
   function pause() {
     if (state.loading) {
       cancelLoad();
+      clearAudio();
     }
     audio.pause();
+    streamAbort?.abort();
     clearPrefetch();
     state.playing = false;
   }
@@ -250,8 +299,10 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
   }
 
   function skipSeconds(amount) {
-    if (!audio.src || !Number.isFinite(audio.duration)) return;
-    audio.currentTime = Math.max(0, Math.min(audio.duration - 0.1, audio.currentTime + amount));
+    const end = stream?.parts.at(-1)?.end ?? audio.duration;
+    const start = stream?.buffer?.buffered.length ? stream.buffer.buffered.start(0) : 0;
+    if (!audio.src || !Number.isFinite(end)) return;
+    audio.currentTime = Math.max(start, Math.min(Math.max(start, end - 0.1), audio.currentTime + amount));
   }
 
   async function jumpChapter(delta) {
@@ -315,11 +366,25 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
   }
 
   audio.addEventListener('timeupdate', () => {
-    state.currentTime = audio.currentTime || 0;
-    state.duration = Number.isFinite(audio.duration) ? audio.duration : 0;
-    if (state.duration && state.currentTime / state.duration > 0.45) prefetchNext();
+    const position = stream?.position();
+    if (position) {
+      if (state.segment !== position.index) {
+        state.segment = position.index;
+        followParagraph(state.segments[position.index].paragraph);
+      }
+      state.currentTime = position.time;
+      state.duration = position.duration;
+      prefetchNext();
+    } else {
+      state.currentTime = audio.currentTime || 0;
+      state.duration = Number.isFinite(audio.duration) ? audio.duration : 0;
+      if (state.duration && state.currentTime / state.duration > 0.45) prefetchNext();
+    }
   });
-  audio.addEventListener('ended', () => { void advance(); });
+  audio.addEventListener('ended', () => {
+    if (stream) state.segment = stream.parts.at(-1)?.index ?? state.segment;
+    void advance();
+  });
   audio.addEventListener('pause', () => {
     state.playing = false;
     updateMediaSession();

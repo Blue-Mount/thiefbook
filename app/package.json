@@ -5,6 +5,7 @@
   "type": "module",
   "description": "摸鱼看书 · 跨端阅读器（PWA）",
   "scripts": {
+    "test": "node --test src/lib/audio-stream.test.js",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview --host"
