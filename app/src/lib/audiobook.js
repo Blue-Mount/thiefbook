@@ -50,6 +50,10 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
   let streamFill = null;
   let streamFailed = false;
 
+  function bufferedAhead(target = stream) {
+    return Math.max(0, (target?.parts.at(-1)?.end || 0) - audio.currentTime);
+  }
+
   function savePreferences() {
     storage.setListening({ voice: state.voice, rate: state.rate, accessCode: state.accessCode });
   }
@@ -171,7 +175,10 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
     streamAbort = controller;
     const task = (async () => {
       let index = target.parts.at(-1).index + 1;
-      while (stream === target && state.playing && index < state.segments.length && index <= state.segment + 3) {
+      // Sentence counts are not a useful buffer budget: several short sentences
+      // can run out before a background TTS request finishes.
+      while (stream === target && state.playing && index < state.segments.length &&
+          bufferedAhead(target) < 45 * state.rate && index <= state.segment + 24) {
         const blob = await fetchSegment(index, controller.signal);
         if (stream !== target || controller.signal.aborted) return;
         await target.append(blob, index++);
@@ -215,7 +222,16 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
         stream = target;
         await target.append(blob, index);
         if (serial !== generation) return;
-        if (index === state.segments.length - 1) target.finish();
+        // Establish a playable runway before handing playback to Android. This
+        // also avoids starting very short audio before full media focus exists.
+        let next = index + 1;
+        while (next < state.segments.length && bufferedAhead(target) < 10 * state.rate && next <= index + 12) {
+          const nextBlob = await fetchSegment(next, currentAbort.signal);
+          if (serial !== generation) return;
+          await target.append(nextBlob, next++);
+          if (serial !== generation) return;
+        }
+        if (next === state.segments.length) target.finish();
       } else {
         objectUrl = URL.createObjectURL(blob);
         audio.src = objectUrl;
@@ -386,10 +402,14 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
     void advance();
   });
   audio.addEventListener('pause', () => {
+    // pause/load queue events. An old event can arrive after a replacement
+    // source is already playing; it must not stop background buffer refill.
+    if (!audio.paused) return;
     state.playing = false;
     updateMediaSession();
   });
   audio.addEventListener('play', () => {
+    if (audio.paused) return;
     state.playing = true;
     updateMediaSession();
   });

@@ -93,17 +93,24 @@ test('reader prebuffers sentences, follows native playback and resumes without r
     currentTime = 0;
     duration = Infinity;
     ended = false;
+    paused = true;
     plays = 0;
     sourceChanges = 0;
     constructor() { super(); player = this; }
     set src(value) {
       this.source = value;
       this.sourceChanges++;
+      this.currentTime = 0;
       queueMicrotask(() => FakeMediaSource.latest.open());
     }
     get src() { return this.source; }
-    async play() { this.plays++; this.dispatchEvent(new Event('play')); }
-    pause() { this.dispatchEvent(new Event('pause')); }
+    async play() {
+      assert.ok(FakeMediaSource.latest.buffer.end >= 10, 'buffer short sentences before starting playback');
+      this.paused = false;
+      this.plays++;
+      this.dispatchEvent(new Event('play'));
+    }
+    pause() { this.paused = true; this.dispatchEvent(new Event('pause')); }
     removeAttribute() { this.source = ''; }
     load() {}
   }
@@ -111,13 +118,16 @@ test('reader prebuffers sentences, follows native playback and resumes without r
   globalThis.localStorage = { getItem: () => null, setItem() {} };
   const requested = [];
   const followed = [];
-  const segments = Array.from({ length: 8 }, (_, paragraph) => ({ paragraph }));
+  const segments = Array.from({ length: 20 }, (_, paragraph) => ({ paragraph }));
+  let releaseNext;
+  const slowNext = new Promise((resolve) => { releaseNext = resolve; });
   const reader = useAudiobook({
     api: {
       ttsConfig: async () => ({ enabled: true, voices: [{ id: 'xuyuyuan_v3.1' }] }),
       ttsSegments: async () => segments,
       ttsAudio: async (_book, _chapter, index) => {
         requested.push(index);
+        if (index === 1) await slowNext;
         return { blob: new Blob(['mp3']), cost: 0 };
       },
     },
@@ -128,9 +138,18 @@ test('reader prebuffers sentences, follows native playback and resumes without r
   try {
     await reader.open();
     reader.setAccessCode('test');
-    await reader.play();
+    const starting = reader.play();
     await settle();
-    assert.deepEqual(requested, [0, 1, 2, 3]);
+    assert.deepEqual(requested, [0, 1]);
+    assert.equal(player.plays, 0, 'slow TTS must not start with only one short sentence');
+    releaseNext();
+    await starting;
+    await settle();
+    assert.deepEqual(requested, Array.from({ length: 9 }, (_, index) => index));
+    // A previously queued pause event must not mark a currently playing source
+    // paused or prevent its rolling buffer from being replenished.
+    player.dispatchEvent(new Event('pause'));
+    assert.equal(reader.state.playing, true);
     player.currentTime = 11;
     player.dispatchEvent(new Event('timeupdate'));
     await settle();
@@ -140,8 +159,9 @@ test('reader prebuffers sentences, follows native playback and resumes without r
     assert.equal(player.plays, 1);
     assert.equal(player.sourceChanges, 1);
     assert.deepEqual(followed, [0, 2]);
-    assert.deepEqual(requested, [0, 1, 2, 3, 4, 5]);
+    assert.deepEqual(requested, Array.from({ length: 12 }, (_, index) => index));
     reader.pause();
+    assert.equal(reader.state.playing, false);
     await reader.play();
     await settle();
     assert.equal(player.sourceChanges, 1);
