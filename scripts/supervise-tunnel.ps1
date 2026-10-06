@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'service-log-maintenance.ps1')
 
 $tunnelId = 'tbk-b147bfa6'
 $localHealthUrl = 'http://127.0.0.1:8787/api/health'
@@ -13,7 +14,7 @@ if (-not $createdNew) { exit 0 }
 New-Item -ItemType Directory -Force -Path $logDir | Out-Null
 
 function Write-SupervisorLog([string]$message) {
-  Add-Content -LiteralPath $supervisorLog -Value "$(Get-Date -Format o) $message" -Encoding UTF8
+  Write-ServiceSupervisorLog -Path $supervisorLog -Message $message
 }
 
 function Find-DevTunnel {

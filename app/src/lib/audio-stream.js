@@ -27,7 +27,7 @@ export class SentenceStream {
     audio.src = this.url;
   }
 
-  async append(blob, index) {
+  async append(blob, index, chapter) {
     await this.ready;
     const bytes = await blob.arrayBuffer();
     if (this.closed) throw new DOMException('Stream closed', 'AbortError');
@@ -42,7 +42,8 @@ export class SentenceStream {
     if (this.closed) throw new DOMException('Stream closed', 'AbortError');
     const ranges = this.buffer.buffered;
     if (!ranges.length) throw new Error('语音没有可播放内容');
-    this.parts.push({ index, start, end: ranges.end(ranges.length - 1) });
+    this.parts.push({ index, start, end: ranges.end(ranges.length - 1),
+      ...(chapter === undefined ? {} : { chapter }) });
   }
 
   updateBuffer(action) {
@@ -64,7 +65,8 @@ export class SentenceStream {
   position() {
     const time = this.audio.currentTime || 0;
     const part = this.parts.find((item) => time < item.end) || this.parts.at(-1);
-    return part ? { index: part.index, time: Math.max(0, time - part.start), duration: part.end - part.start } : null;
+    return part ? { index: part.index, time: Math.max(0, time - part.start), duration: part.end - part.start,
+      ...(part.chapter === undefined ? {} : { chapter: part.chapter }) } : null;
   }
 
   finish() {

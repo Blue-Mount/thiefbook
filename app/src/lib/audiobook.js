@@ -49,6 +49,7 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
   let streamAbort = null;
   let streamFill = null;
   let streamFailed = false;
+  const streamChapters = new Map();
 
   function bufferedAhead(target = stream) {
     return Math.max(0, (target?.parts.at(-1)?.end || 0) - audio.currentTime);
@@ -72,6 +73,7 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
     streamFailed = false;
     stream?.destroy();
     stream = null;
+    streamChapters.clear();
     audio.pause();
     audio.removeAttribute('src');
     audio.load();
@@ -153,8 +155,8 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
     if (!active.value || state.chapter !== chapterIndex.value) await loadChapter(chapterIndex.value, true);
   }
 
-  async function fetchSegment(index, signal) {
-    const result = await api.ttsAudio(state.bookId, state.chapter, index, state.voice, state.accessCode, signal);
+  async function fetchSegment(index, signal, chapter = state.chapter) {
+    const result = await api.ttsAudio(state.bookId, chapter, index, state.voice, state.accessCode, signal);
     state.cost += result.cost;
     return result.blob;
   }
@@ -168,22 +170,45 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
     nextPromise = fetchSegment(index, nextAbort.signal).catch(() => null);
   }
 
+  async function appendNext(target, signal) {
+    const last = target.parts.at(-1);
+    let chapter = last.chapter;
+    let index = last.index + 1;
+    let segments = streamChapters.get(chapter);
+    while (index >= segments.length) {
+      if (state.sleep === 'chapter' || chapter >= book.value.chapters.length - 1) {
+        target.finish();
+        return false;
+      }
+      chapter++;
+      index = 0;
+      segments = streamChapters.get(chapter);
+      if (!segments) {
+        segments = await api.ttsSegments(state.bookId, chapter);
+        if (stream !== target || signal.aborted) return false;
+        streamChapters.set(chapter, segments);
+      }
+    }
+    const blob = await fetchSegment(index, signal, chapter);
+    if (stream !== target || signal.aborted) return false;
+    await target.append(blob, index, chapter);
+    return stream === target && !signal.aborted;
+  }
+
   function fillStream() {
-    if (!stream || streamFill || streamFailed || !state.playing) return;
+    if (!stream || streamFill || streamFailed || !state.playing || state.loading) return;
     const target = stream;
     const controller = new AbortController();
     streamAbort = controller;
     const task = (async () => {
-      let index = target.parts.at(-1).index + 1;
       // Sentence counts are not a useful buffer budget: several short sentences
       // can run out before a background TTS request finishes.
-      while (stream === target && state.playing && index < state.segments.length &&
-          bufferedAhead(target) < 45 * state.rate && index <= state.segment + 24) {
-        const blob = await fetchSegment(index, controller.signal);
-        if (stream !== target || controller.signal.aborted) return;
-        await target.append(blob, index++);
+      let appended = 0;
+      while (stream === target && state.playing && !controller.signal.aborted &&
+          target.media.readyState !== 'ended' && bufferedAhead(target) < 45 * state.rate && appended < 24) {
+        if (!await appendNext(target, controller.signal)) return;
+        appended++;
       }
-      if (stream === target && index === state.segments.length) target.finish();
     })().catch((error) => {
       if (stream === target && error.name !== 'AbortError') {
         streamFailed = true;
@@ -220,18 +245,20 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
       if (SentenceStream.supported()) {
         const target = new SentenceStream(audio);
         stream = target;
-        await target.append(blob, index);
+        streamChapters.set(state.chapter, state.segments);
+        await target.append(blob, index, state.chapter);
         if (serial !== generation) return;
         // Establish a playable runway before handing playback to Android. This
         // also avoids starting very short audio before full media focus exists.
-        let next = index + 1;
-        while (next < state.segments.length && bufferedAhead(target) < 10 * state.rate && next <= index + 12) {
-          const nextBlob = await fetchSegment(next, currentAbort.signal);
-          if (serial !== generation) return;
-          await target.append(nextBlob, next++);
+        let appended = 0;
+        while (bufferedAhead(target) < 10 * state.rate && appended < 12) {
+          if (!await appendNext(target, currentAbort.signal)) break;
+          appended++;
           if (serial !== generation) return;
         }
-        if (next === state.segments.length) target.finish();
+        const last = target.parts.at(-1);
+        if (last.index === streamChapters.get(last.chapter).length - 1 &&
+            (state.sleep === 'chapter' || last.chapter === book.value.chapters.length - 1)) target.finish();
       } else {
         objectUrl = URL.createObjectURL(blob);
         audio.src = objectUrl;
@@ -249,7 +276,10 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
       state.error = error.name === 'NotAllowedError' ? '请再点一次播放，浏览器需要确认播放手势' : error.message;
       state.playing = false;
     } finally {
-      if (serial === generation) state.loading = false;
+      if (serial === generation) {
+        state.loading = false;
+        prefetchNext();
+      }
     }
   }
 
@@ -325,10 +355,73 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
     if (!state.enabled || !state.accessCode.trim()) { state.error = '请先配置语音服务并填写听书密码'; return; }
     const next = state.chapter + delta;
     if (next < 0 || next >= (book.value?.chapters.length || 0)) return;
+    if (stream && state.playing && !audio.paused && !audio.ended) {
+      await jumpStreamChapter(next);
+      return;
+    }
     cancelLoad();
     clearAudio();
     if (!await goChapter(next, 0, true, true, true)) return;
     if (await loadChapter(next)) await playSegment(0);
+  }
+
+  async function jumpStreamChapter(next) {
+    const target = stream;
+    cancelLoad();
+    const serial = generation;
+    const controller = new AbortController();
+    currentAbort = controller;
+    state.loading = true;
+    state.error = '';
+    streamAbort?.abort();
+    try {
+      // Serialize with buffer refill: SourceBuffer accepts only one append at a time.
+      await streamFill;
+      if (serial !== generation || stream !== target) return;
+      const segments = streamChapters.get(next) || await api.ttsSegments(state.bookId, next);
+      if (serial !== generation || stream !== target) return;
+      if (!segments.length) throw new Error('本章没有可朗读内容');
+      streamChapters.set(next, segments);
+      const retainedStart = target.buffer.buffered.length ? target.buffer.buffered.start(0) : 0;
+      let first = target.parts.find((part) => part.chapter === next && part.index === 0 &&
+        part.start >= retainedStart && part.start >= audio.currentTime);
+      if (!first) {
+        const blob = await fetchSegment(0, controller.signal, next);
+        if (serial !== generation || stream !== target) return;
+        await target.append(blob, 0, next);
+        if (serial !== generation || stream !== target) return;
+        first = target.parts.at(-1);
+      }
+      // Do not seek into a lone chapter title while its body is still being fetched.
+      let appended = 0;
+      while (target.parts.at(-1).end - first.start < 10 * state.rate && appended < 12) {
+        if (!await appendNext(target, controller.signal)) break;
+        appended++;
+        if (serial !== generation || stream !== target) return;
+      }
+      if (serial !== generation || stream !== target) return;
+      state.chapter = next;
+      state.segments = segments;
+      state.segment = 0;
+      audio.currentTime = first.start;
+      state.currentTime = 0;
+      state.duration = first.end - first.start;
+      streamFailed = false;
+      updateMediaSession();
+      // Loading the reading view must not hold up rolling audio prefetch.
+      void goChapter(next, 0, true, true, true).then((changed) => {
+        if (changed && serial === generation && stream === target && state.chapter === next) {
+          followParagraph(state.segments[state.segment].paragraph);
+        }
+      });
+    } catch (error) {
+      if (serial === generation && error.name !== 'AbortError') state.error = error.message;
+    } finally {
+      if (serial === generation) {
+        state.loading = false;
+        prefetchNext();
+      }
+    }
   }
 
   async function advance() {
@@ -381,9 +474,31 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
     navigator.mediaSession.playbackState = state.playing ? 'playing' : 'paused';
   }
 
-  audio.addEventListener('timeupdate', () => {
+  function updateAudioPosition() {
     const position = stream?.position();
     if (position) {
+      if (position.chapter !== state.chapter) {
+        // Keep native playback running across chapters, including while locked.
+        // Updating the reading view must not block appending or restart audio.
+        if (state.sleep === 'chapter') {
+          const boundary = stream.parts.find((part) => part.chapter === position.chapter).start;
+          audio.currentTime = Math.max(0, boundary - 0.01);
+          state.segment = state.segments.length - 1;
+          pause();
+          say('本章播完，已停止朗读');
+          return;
+        }
+        state.chapter = position.chapter;
+        state.segments = streamChapters.get(position.chapter);
+        state.segment = position.index;
+        const target = stream;
+        void goChapter(position.chapter, 0, true, true, true).then((changed) => {
+          if (changed && stream === target && state.chapter === position.chapter) {
+            followParagraph(state.segments[state.segment].paragraph);
+          }
+        });
+        updateMediaSession();
+      }
       if (state.segment !== position.index) {
         state.segment = position.index;
         followParagraph(state.segments[position.index].paragraph);
@@ -396,9 +511,10 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
       state.duration = Number.isFinite(audio.duration) ? audio.duration : 0;
       if (state.duration && state.currentTime / state.duration > 0.45) prefetchNext();
     }
-  });
+  }
+  audio.addEventListener('timeupdate', updateAudioPosition);
   audio.addEventListener('ended', () => {
-    if (stream) state.segment = stream.parts.at(-1)?.index ?? state.segment;
+    updateAudioPosition();
     void advance();
   });
   audio.addEventListener('pause', () => {
