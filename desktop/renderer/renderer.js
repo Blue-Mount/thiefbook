@@ -152,7 +152,7 @@ async function pushNow(bookId = activeBookId()) {
     if (res.accepted === false && res.current && bookId === activeBookId()) applyRemote(res.current);
   } catch {
     // 短暂断网时保留同一个 updatedAt 重试，既不丢更新，也不会抢占真正较新的远端进度。
-    pushTimer = setTimeout(pushNow, 5000);
+    pushTimer = setTimeout(() => pushNow(bookId), 5000);
   }
 }
 function applyRemote(remote) {
@@ -166,6 +166,7 @@ function applyRemote(remote) {
     Math.abs((local.percent || 0) - (remote.percent || 0)) < 0.01;
   config.progresses = { ...(config.progresses || {}), [activeBookId()]: { ...remote } };
   config.progress = { ...remote };
+  clearTimeout(saveTimer);
   window.api.setConfig({ progress: config.progress, progresses: { [activeBookId()]: config.progress } });
   if (same) return false;
   loadChapter(remote.chapter, remote.percent || 0, false);
@@ -185,7 +186,6 @@ async function switchToBook(bookId, updatedAt = Date.now(), broadcast = false) {
   if (book && bookId === activeBookId()) return;
   const previousBookId = activeBookId();
   if (book) {
-    saveLocal();
     void pushNow(previousBookId);
   }
   try {

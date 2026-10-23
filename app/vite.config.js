@@ -22,6 +22,7 @@ export default defineConfig({
         ],
       },
       workbox: {
+        navigateFallbackDenylist: [/^\/auth(?:\/|$)/],
         // Do not precache whole novels.  They are large and an old precache
         // can make the browser keep showing a different/obsolete book.
         maximumFileSizeToCacheInBytes: 30 * 1024 * 1024,

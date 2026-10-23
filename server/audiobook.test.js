@@ -103,3 +103,50 @@ test('audio endpoint accepts only book segments and caches generated audio', asy
   assert.equal(await second.text(), 'fake-mp3');
   assert.equal(modelCalls, 1);
 });
+
+test('daily request, character and budget guards persist across restart and permit cached audio', async () => {
+  const names = ['TTS_DAILY_MAX_REQUESTS', 'TTS_DAILY_MAX_CHARS', 'TTS_DAILY_BUDGET_CNY', 'TTS_REQUEST_RESERVE_CNY'];
+  const saved = Object.fromEntries(names.map((name) => [name, process.env[name]]));
+  try {
+    for (const [name, limit] of [['TTS_DAILY_MAX_REQUESTS', '1'], ['TTS_DAILY_MAX_CHARS', '5'], ['TTS_DAILY_BUDGET_CNY', '0.1001']]) {
+      for (const key of names) delete process.env[key];
+      process.env[name] = limit;
+      const quotaDir = path.join(root, name);
+      let calls = 0;
+      const options = {
+        booksDir: uploaded, builtinBooksDir: builtins, dataDir: quotaDir,
+        fetchImpl: async (url) => {
+          if (new URL(url).hostname.startsWith('dashscope-result-')) return new Response(Buffer.from('fake-mp3'));
+          calls++;
+          return new Response(JSON.stringify({ output: { audio: { url: 'https://dashscope-result-bj.oss-cn-beijing.aliyuncs.com/test.mp3' } }, usage: { input_tokens: 100, output_tokens: 200 } }), { headers: { 'Content-Type': 'application/json' } });
+        },
+      };
+      for (let run = 0; run < 2; run++) {
+        const app = express();
+        app.use(express.json());
+        app.use(makeAudiobookRouter(options));
+        const quotaServer = app.listen(0, '127.0.0.1');
+        await new Promise((resolve) => quotaServer.once('listening', resolve));
+        try {
+          const request = (segment) => fetch(`http://127.0.0.1:${quotaServer.address().port}/audio`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ book: 'sample', chapter: 0, segment, voice: 'xuyuyuan_v3.1', code: 'private-test-code' }),
+          });
+          const first = await request(1);
+          assert.equal(first.status, 200, `${name} cached segment remains available`);
+          assert.equal(first.headers.get('X-TTS-Cache'), run ? 'hit' : 'miss');
+          await first.arrayBuffer();
+          const denied = await request(2);
+          assert.equal(denied.status, 429, name);
+          await denied.json();
+        } finally { await new Promise((resolve) => quotaServer.close(resolve)); }
+      }
+      assert.equal(calls, 1, `${name} must deny calls before reaching provider`);
+    }
+  } finally {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
+});

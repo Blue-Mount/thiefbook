@@ -49,6 +49,8 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
   let streamAbort = null;
   let streamFill = null;
   let streamFailed = false;
+  let reconnectTimer = null;
+  const streamRequests = new Map();
   const streamChapters = new Map();
 
   function bufferedAhead(target = stream) {
@@ -67,6 +69,9 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
   }
 
   function clearAudio() {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    streamRequests.clear();
     streamAbort?.abort();
     streamAbort = null;
     streamFill = null;
@@ -189,9 +194,28 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
         streamChapters.set(chapter, segments);
       }
     }
-    const blob = await fetchSegment(index, signal, chapter);
+    // Keep two synthesis requests in flight, but append strictly in text order.
+    // Reuse only requests belonging to this refill; aborted seeks must not leak
+    // old audio into a replacement stream.
+    const prepare = (segment) => {
+      const key = `${chapter}:${segment}`;
+      let entry = streamRequests.get(key);
+      if (!entry || entry.signal.aborted) {
+        const promise = fetchSegment(segment, signal, chapter);
+        promise.catch(() => {});
+        entry = { signal, promise };
+        streamRequests.set(key, entry);
+      }
+      return entry.promise;
+    };
+    const pending = prepare(index);
+    if (index + 1 < segments.length) prepare(index + 1);
+    let blob;
+    try { blob = await pending; }
+    finally { streamRequests.delete(`${chapter}:${index}`); }
     if (stream !== target || signal.aborted) return false;
     await target.append(blob, index, chapter);
+    if (state.error === '语音连接暂时中断，正在重新连接…') state.error = '';
     return stream === target && !signal.aborted;
   }
 
@@ -213,8 +237,22 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
       if (stream === target && error.name !== 'AbortError') {
         streamFailed = true;
         state.error = error.message;
+        if (error.retryable) {
+          state.error = '语音连接暂时中断，正在重新连接…';
+          clearTimeout(reconnectTimer);
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            if (stream !== target || !state.playing) return;
+            streamFailed = false;
+            fillStream();
+          }, 5000);
+        }
       }
     }).finally(() => {
+      controller.abort();
+      for (const [key, entry] of streamRequests) {
+        if (entry.signal === controller.signal) streamRequests.delete(key);
+      }
       if (streamFill === task) { streamFill = null; streamAbort = null; }
     });
     streamFill = task;
@@ -311,7 +349,11 @@ export function useAudiobook({ api, book, chapterIndex, goChapter, readingParagr
       clearAudio();
     }
     audio.pause();
+    currentAbort?.abort();
     streamAbort?.abort();
+    streamRequests.clear();
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
     clearPrefetch();
     state.playing = false;
   }

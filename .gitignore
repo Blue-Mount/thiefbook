@@ -7,3 +7,9 @@ server/data/
 # 破解 exe 不入库（大、且不该传 GitHub）
 *.exe
 server/.env
+
+# Local diagnostics and remote-control screenshots can contain private data.
+.codex-remote-attachments/
+power-monitor.csv
+power-monitor.summary.txt
+sunlogin-*.png

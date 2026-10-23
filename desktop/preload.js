@@ -12,6 +12,12 @@ contextBridge.exposeInMainWorld('api', {
   setBookCache: (bookId, json) => ipcRenderer.invoke('book:setCache', bookId, json),
   listLocalBooks: () => ipcRenderer.invoke('book:listLocal'),
 
+  // 网络只经主进程的受限代理；cookie 保留在共享的 Electron session。
+  syncRequest: (request) => ipcRenderer.invoke('sync:request', request),
+  loginSync: () => ipcRenderer.invoke('sync:login'),
+  onSyncAuthState: (cb) => ipcRenderer.on('sync:auth-state', (_e, state) => cb(state)),
+  onSyncLoginClosed: (cb) => ipcRenderer.on('sync:login-closed', () => cb()),
+
   // 窗口/菜单
   showMenu: () => ipcRenderer.send('menu:show'),
   openSettings: () => ipcRenderer.send('settings:open'),

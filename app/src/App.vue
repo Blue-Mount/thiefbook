@@ -2,6 +2,7 @@
 import { ref, reactive, computed, onMounted, onBeforeUnmount, nextTick, watch } from 'vue';
 import { storage } from './lib/storage';
 import { makeApi } from './lib/api';
+import { loginAgain } from './lib/auth-fetch';
 import { useAudiobook, formatAudioTime } from './lib/audiobook';
 
 const book = ref(null);
@@ -29,6 +30,8 @@ const chapter = computed(() => book.value?.chapters[chapterIndex.value] || null)
 const chapterCount = computed(() => book.value?.chapters.length || 0);
 let audiobook;
 let bookLoadSerial = 0;
+let lastScrollTop = null;
+let syncInterval = null;
 
 function activeBookId() {
   return currentBookId.value;
@@ -50,6 +53,8 @@ function scrollToPercent(p) {
   const el = document.documentElement;
   const max = el.scrollHeight - el.clientHeight;
   window.scrollTo({ top: max * (p || 0), behavior: 'auto' });
+  // scroll 事件会延后触发；记住恢复后的位置，避免把自动定位当成阅读。
+  lastScrollTop = el.scrollTop;
 }
 function makeProgress() {
   const progress = { chapter: chapterIndex.value, percent: currentPercent(), updatedAt: Date.now() };
@@ -67,6 +72,10 @@ function saveLocal() {
   const bookId = activeBookId();
   if (!book.value || book.value.id !== bookId) return null;
   const progress = { ...makeProgress(), device };
+  const previous = storage.getProgress(bookId);
+  if (previous && previous.chapter === progress.chapter &&
+      Math.abs((previous.percent || 0) - progress.percent) < 0.000001 &&
+      previous.mode === progress.mode && previous.segment === progress.segment) return previous;
   storage.setProgress(bookId, progress);
   return progress;
 }
@@ -94,13 +103,19 @@ async function pushNow(bookId = activeBookId()) {
 // ---------- 应用远端进度 ----------
 async function applyRemote(remote, notify) {
   if (!remote || remote.book !== activeBookId()) return false;
+  flushPendingScroll();
   const local = storage.getProgress(activeBookId());
   const localTs = local?.updatedAt || 0;
   if (remote.updatedAt <= localTs) return false;
   const samePos = local && local.chapter === remote.chapter &&
     Math.abs((local.percent || 0) - (remote.percent || 0)) < 0.01 &&
     local.mode === remote.mode && local.segment === remote.segment;
-  if (!samePos && !await goChapter(remote.chapter, remote.percent, false, false)) return false;
+  clearTimeout(scrollTimer);
+  scrollTimer = null;
+  const canApply = () => remote.book === activeBookId() &&
+    remote.updatedAt > (storage.getProgress(remote.book)?.updatedAt || 0);
+  if (!samePos && !await goChapter(remote.chapter, remote.percent, false, false, false, canApply)) return false;
+  if (!canApply()) return false;
   storage.setProgress(activeBookId(), { ...remote, device: remote.device });
   if (samePos) return false;
   if (notify) say(`已从「${remote.device || '云端'}」同步到 ${chapterTitle(remote.chapter)}`);
@@ -112,7 +127,7 @@ function chapterTitle(idx) {
 }
 
 // ---------- 章节跳转 ----------
-async function goChapter(idx, percent = 0, resetScroll = true, persist = true, fromAudio = false) {
+async function goChapter(idx, percent = 0, resetScroll = true, persist = true, fromAudio = false, canApply = () => true) {
   if (idx < 0 || idx >= chapterCount.value) return false;
   if (persist && idx !== chapterIndex.value) {
     saveLocal();
@@ -134,11 +149,11 @@ async function goChapter(idx, percent = 0, resetScroll = true, persist = true, f
       if (book.value === targetBook) loading.value = false;
     }
   }
-  if (book.value !== targetBook) return false;
+  if (book.value !== targetBook || !canApply()) return false;
   chapterIndex.value = idx;
   showToc.value = false;
   await nextTick();
-  if (resetScroll && !percent) window.scrollTo({ top: 0, behavior: 'auto' });
+  if (resetScroll && !percent) scrollToPercent(0);
   else scrollToPercent(percent);
   if (persist) {
     saveLocal();
@@ -173,8 +188,13 @@ function toggleNight() {
 // ---------- 滚动与键盘 ----------
 let scrollTimer = null;
 function onScroll() {
+  if (loading.value || !book.value) return;
+  const top = document.documentElement.scrollTop;
+  if (top === lastScrollTop) return;
+  lastScrollTop = top;
   clearTimeout(scrollTimer);
   scrollTimer = setTimeout(() => {
+    scrollTimer = null;
     if (loading.value) return;
     saveLocal();
     schedulePush();
@@ -240,22 +260,26 @@ function saveSync() {
   refreshLibrary();
   refreshSync();
 }
-async function refreshSync() {
+async function refreshSync(notify = true) {
   const bookId = activeBookId();
+  if (!book.value || book.value.id !== bookId || loading.value) return;
   syncStatus.value = 'syncing';
-  const ok = await api.health();
-  if (!ok) { syncStatus.value = 'error'; say('连不上同步服务器，请检查地址'); return; }
   try {
     const remote = await api.pull(bookId);
     if (bookId !== activeBookId()) return;
-    const adopted = await applyRemote(remote, true);
-    syncStatus.value = 'ok';
-    if (!adopted) {
+    const adopted = await applyRemote(remote, notify);
+    const local = storage.getProgress(bookId);
+    if (local && local.updatedAt > (remote?.updatedAt || 0)) await pushNow(bookId);
+    else syncStatus.value = 'ok';
+    if (notify && !adopted && syncStatus.value === 'ok') {
       if (!remote) say('云端本书暂无进度（先在另一台读几章并保存）');
       else say(`已是最新 · 云端 ${chapterTitle(remote.chapter)}`);
     }
   } catch {
-    if (bookId === activeBookId()) syncStatus.value = 'error';
+    if (bookId === activeBookId()) {
+      syncStatus.value = 'error';
+      if (notify) say('连不上同步服务器，请检查地址');
+    }
   }
 }
 const statusText = computed(() => ({
@@ -286,11 +310,12 @@ async function switchBook(bookId, notify = true, broadcast = true) {
   const previousBookId = activeBookId();
   const serial = ++bookLoadSerial;
   if (book.value) {
-    saveLocal();
+    flushPendingScroll();
     void pushNow(previousBookId);
   }
   audiobook.stop(true);
   clearTimeout(scrollTimer);
+  scrollTimer = null;
   clearTimeout(pushTimer);
 
   loading.value = true;
@@ -298,12 +323,13 @@ async function switchBook(bookId, notify = true, broadcast = true) {
   showLibrary.value = false;
   book.value = null;
   currentBookId.value = bookId;
-  const switchedAt = Date.now();
+  const selection = storage.getCurrentBookState();
+  const switchedAt = broadcast ? Date.now() : (selection?.book === bookId ? selection.updatedAt : 0);
   storage.setCurrentBook(bookId, switchedAt, device);
   if (broadcast) {
     api.pushCurrentBook(bookId, switchedAt, device).catch(() => {});
   }
-  window.scrollTo({ top: 0, behavior: 'auto' });
+  scrollToPercent(0);
 
   try {
     const loaded = await api.bookManifest(bookId);
@@ -320,7 +346,7 @@ async function switchBook(bookId, notify = true, broadcast = true) {
     await nextTick();
     scrollToPercent(local?.percent || 0);
     if (notify) say(`已切换到《${loaded.title}》，并恢复阅读进度`);
-    refreshSync();
+    await refreshSync(false);
   } catch (e) {
     if (serial !== bookLoadSerial || bookId !== activeBookId()) return;
     book.value = null;
@@ -337,8 +363,8 @@ async function syncCurrentBook(notify = true) {
       if (!books.value.some((b) => b.id === remote.book)) return;
       storage.setCurrentBook(remote.book, remote.updatedAt, remote.device || '');
       if (remote.book !== activeBookId()) {
-        currentBookId.value = remote.book;
         await switchBook(remote.book, notify, false);
+        storage.setCurrentBook(remote.book, remote.updatedAt, remote.device || '');
       }
     } else if (local?.book && local.updatedAt > (remote?.updatedAt || 0)) {
       await api.pushCurrentBook(local.book, local.updatedAt, local.device || device);
@@ -377,6 +403,31 @@ async function uploadBook(e) {
 }
 
 // ---------- 启动 ----------
+function flushPendingScroll() {
+  if (scrollTimer === null) return;
+  clearTimeout(scrollTimer);
+  scrollTimer = null;
+  if (!loading.value) saveLocal();
+}
+async function syncForeground() {
+  await syncCurrentBook(true);
+  await refreshSync(false);
+}
+function onVisibilityChange() {
+  if (document.hidden) {
+    flushPendingScroll();
+    void pushNow();
+  } else {
+    void syncForeground();
+  }
+}
+function onOnline() {
+  if (!document.hidden) void syncForeground();
+}
+function onPageHide() {
+  flushPendingScroll();
+  void pushNow();
+}
 onMounted(async () => {
   await refreshLibrary();
   await syncCurrentBook(false);
@@ -388,15 +439,22 @@ onMounted(async () => {
 
   window.addEventListener('scroll', onScroll, { passive: true });
   window.addEventListener('keydown', onKey);
-  document.addEventListener('visibilitychange', () => { if (document.hidden) pushNow(); });
-  window.addEventListener('beforeunload', () => { saveLocal(); });
-  setInterval(() => { if (!document.hidden) syncCurrentBook(true); }, 20000);
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  window.addEventListener('online', onOnline);
+  window.addEventListener('pagehide', onPageHide);
+  syncInterval = setInterval(() => { if (!document.hidden) void syncForeground(); }, 20000);
 });
 
 onBeforeUnmount(() => {
   audiobook.destroy();
   window.removeEventListener('scroll', onScroll);
   window.removeEventListener('keydown', onKey);
+  document.removeEventListener('visibilitychange', onVisibilityChange);
+  window.removeEventListener('online', onOnline);
+  window.removeEventListener('pagehide', onPageHide);
+  clearInterval(syncInterval);
+  clearTimeout(scrollTimer);
+  clearTimeout(pushTimer);
 });
 </script>
 
@@ -419,6 +477,7 @@ onBeforeUnmount(() => {
       <div v-else-if="loadError" class="hint error">
         <div>{{ loadError }}</div>
         <button class="retry-book" @click="switchBook(activeBookId(), false, false)">重试加载</button>
+        <button class="retry-book" @click="loginAgain()">重新登录</button>
       </div>
       <template v-else>
         <h2 v-if="chapter?.volume" class="volume">{{ chapter.volume }}</h2>

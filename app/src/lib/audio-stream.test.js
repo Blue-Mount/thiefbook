@@ -141,12 +141,12 @@ test('reader prebuffers sentences, follows native playback and resumes without r
     reader.setAccessCode('test');
     const starting = reader.play();
     await settle();
-    assert.deepEqual(requested, [0, 1]);
+    assert.deepEqual(requested, [0, 1, 2], 'synthesize the next sentence while the current request is pending');
     assert.equal(player.plays, 0, 'slow TTS must not start with only one short sentence');
     releaseNext();
     await starting;
     await settle();
-    assert.deepEqual(requested, Array.from({ length: 9 }, (_, index) => index));
+    assert.deepEqual(requested, Array.from({ length: 10 }, (_, index) => index));
     // A previously queued pause event must not mark a currently playing source
     // paused or prevent its rolling buffer from being replenished.
     player.dispatchEvent(new Event('pause'));
@@ -160,7 +160,7 @@ test('reader prebuffers sentences, follows native playback and resumes without r
     assert.equal(player.plays, 1);
     assert.equal(player.sourceChanges, 1);
     assert.deepEqual(followed, [0, 2]);
-    assert.deepEqual(requested, Array.from({ length: 12 }, (_, index) => index));
+    assert.deepEqual(requested, [...Array.from({ length: 10 }, (_, index) => index), 9, 10, 11, 12]);
     reader.pause();
     assert.equal(reader.state.playing, false);
     await reader.play();
@@ -180,7 +180,7 @@ test('reader prebuffers sentences, follows native playback and resumes without r
   }
 });
 
-async function chapterPlayer(run, { sleep = 'off', segmentsPerChapter = 2 } = {}) {
+async function chapterPlayer(run, { sleep = 'off', segmentsPerChapter = 2, audioResponse } = {}) {
   const previousAudio = globalThis.Audio;
   const previousStorage = globalThis.localStorage;
   let player;
@@ -222,6 +222,7 @@ async function chapterPlayer(run, { sleep = 'off', segmentsPerChapter = 2 } = {}
         (_, paragraph) => ({ paragraph, text: `${chapter}:${paragraph}` })),
       ttsAudio: async (_book, chapter, index) => {
         requested.push([chapter, index]);
+        if (audioResponse) return audioResponse(chapter, index);
         return { blob: new Blob(['mp3']), cost: 0 };
       },
     },
@@ -273,6 +274,33 @@ test('locked playback crosses multiple chapters using the same native resource',
     assert.equal(reader.state.playing, false, 'stop at the end of the book');
     assert.equal(reader.state.error, '');
   });
+});
+
+test('a transient refill failure reconnects and resumes appending to the same source', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let failed = false;
+  await chapterPlayer(async ({ reader, player, requested, settle }) => {
+    assert.match(reader.state.error, /正在重新连接/);
+    assert.equal(FakeMediaSource.latest.buffer.end, 10);
+    player.currentTime = 10;
+    player.locked = true;
+    t.mock.timers.tick(5000);
+    await settle();
+    assert.ok(FakeMediaSource.latest.buffer.end >= 55, 'refill even after native playback runs out of audio');
+    assert.equal(requested.filter(([chapter, index]) => chapter === 0 && index === 2).length, 2);
+    assert.equal(reader.state.error, '');
+    assert.equal(player.sourceChanges, 1);
+    assert.equal(player.plays, 1);
+    assert.equal(reader.state.playing, true);
+  }, { segmentsPerChapter: 20, audioResponse: async (_chapter, index) => {
+    if (index === 2 && !failed) {
+      failed = true;
+      const error = new Error('connection lost');
+      error.retryable = true;
+      throw error;
+    }
+    return { blob: new Blob(['mp3']), cost: 0 };
+  } });
 });
 
 test('chapter sleep ends the stream without fetching the next chapter', async () => {

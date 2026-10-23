@@ -1,5 +1,6 @@
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'service-log-maintenance.ps1')
+. (Join-Path $PSScriptRoot 'tunnel-auth.ps1')
 
 $tunnelId = 'tbk-b147bfa6'
 $localHealthUrl = 'http://127.0.0.1:8787/api/health'
@@ -140,7 +141,7 @@ while ($true) {
     $failedPublicChecks = 0
     while (-not $process.HasExited) {
       try {
-        $publicHealth = Invoke-RestMethod -Uri $publicHealthUrl -TimeoutSec 8
+        $publicHealth = Invoke-ThiefBookTunnelHealth -Url $publicHealthUrl -DevTunnel $devTunnel -TunnelId $tunnelId
         if ($publicHealth.ok -ne $true) { throw 'public health response did not contain ok=true' }
         $failedPublicChecks = 0
       } catch {

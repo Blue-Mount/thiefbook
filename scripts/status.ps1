@@ -1,4 +1,5 @@
 $ErrorActionPreference = 'Continue'
+. (Join-Path $PSScriptRoot 'tunnel-auth.ps1')
 
 $logDir = Join-Path $env:LOCALAPPDATA 'thiefbook\logs'
 $checks = @(
@@ -62,7 +63,11 @@ $components | Format-Table -AutoSize
 
 foreach ($check in $checks) {
   try {
-    $result = Invoke-RestMethod -Uri $check.Url -TimeoutSec 15
+    if ($check.Name -eq 'public') {
+      $result = Invoke-ThiefBookTunnelHealth -Url $check.Url -DevTunnel (Find-ThiefBookDevTunnel) -TimeoutSec 15
+    } else {
+      $result = Invoke-RestMethod -Uri $check.Url -TimeoutSec 15
+    }
     Write-Host ("{0,-7} OK  {1}" -f $check.Name, ($result | ConvertTo-Json -Compress)) -ForegroundColor Green
   } catch {
     Write-Host ("{0,-7} FAIL  {1}" -f $check.Name, $_.Exception.Message) -ForegroundColor Red

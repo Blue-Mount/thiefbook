@@ -2,6 +2,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import express from 'express';
+import { atomicJson } from './storage.js';
+import { positiveInt } from './security.js';
 
 export const TTS_VOICES = [
   { id: 'xuyuyuan_v3.1', name: '许玉远 · 知性女声' },
@@ -84,6 +86,46 @@ export function makeAudiobookRouter({ booksDir, builtinBooksDir, dataDir, fetchI
   const books = new Map();
   const pending = new Map();
   let activeGenerations = 0;
+  const usageFile = path.join(dataDir, 'tts-usage.json');
+  const dailyCharacters = positiveInt(process.env.TTS_DAILY_MAX_CHARS, 300000, 1000000);
+  const dailyRequests = positiveInt(process.env.TTS_DAILY_MAX_REQUESTS, 3000, 10000);
+  const configuredBudget = Number(process.env.TTS_DAILY_BUDGET_CNY || 5);
+  const dailyBudget = configuredBudget > 0 && Number.isFinite(configuredBudget) ? configuredBudget : 5;
+  const configuredReserve = Number(process.env.TTS_REQUEST_RESERVE_CNY || 0.10);
+  const requestReserve = configuredReserve > 0 && Number.isFinite(configuredReserve) ? configuredReserve : 0.10;
+  fs.mkdirSync(dataDir, { recursive: true });
+  let usage = null;
+  if (fs.existsSync(usageFile)) {
+    usage = JSON.parse(fs.readFileSync(usageFile, 'utf8'));
+    if (!usage || !/^\d{4}-\d{2}-\d{2}$/.test(usage.day) ||
+        !['requests', 'characters', 'spentCny', 'reservedCny'].every((key) => Number.isFinite(usage[key]) && usage[key] >= 0)) {
+      throw new Error('听书用量文件损坏，请检查后再启动');
+    }
+  }
+
+  function reserveUsage(text) {
+    const day = new Date(Date.now() + 8 * 3600000).toISOString().slice(0, 10);
+    const current = usage?.day === day ? usage : { day, requests: 0, characters: 0, spentCny: 0, reservedCny: 0 };
+    const characters = Array.from(text).length;
+    if (current.requests >= dailyRequests || current.characters + characters > dailyCharacters ||
+        current.spentCny + current.reservedCny + requestReserve > dailyBudget + 1e-9) {
+      const error = new Error('今日听书用量或预算已达上限，请明日重试');
+      error.status = 429;
+      throw error;
+    }
+    const next = { ...current, requests: current.requests + 1, characters: current.characters + characters,
+      reservedCny: current.reservedCny + requestReserve };
+    atomicJson(usageFile, next);
+    usage = next;
+    return day;
+  }
+
+  function finishUsage(day, cost = requestReserve) {
+    if (usage?.day !== day) return;
+    const next = { ...usage, reservedCny: Math.max(0, usage.reservedCny - requestReserve), spentCny: usage.spentCny + cost };
+    atomicJson(usageFile, next);
+    usage = next;
+  }
 
   function enabled() {
     return Boolean(process.env.DASHSCOPE_API_KEY && process.env.SFM_WORKSPACE_ID && process.env.TTS_ACCESS_CODE);
@@ -170,9 +212,18 @@ export function makeAudiobookRouter({ booksDir, builtinBooksDir, dataDir, fetchI
       error.status = 429;
       throw error;
     }
+    const usageDay = reserveUsage(text);
     activeGenerations++;
     const task = (async () => {
-      const result = await generate(text, voice);
+      let result;
+      try {
+        result = await generate(text, voice);
+      } catch (error) {
+        // Failure may occur after the provider has billed the request; keep a conservative charge.
+        finishUsage(usageDay);
+        throw error;
+      }
+      finishUsage(usageDay, (result.inputTokens * 1.5 + result.outputTokens * 12) / 1_000_000);
       fs.mkdirSync(cacheDir, { recursive: true });
       const temp = `${file}.${process.pid}.${crypto.randomUUID()}.tmp`;
       fs.writeFileSync(temp, result.audio);
@@ -223,7 +274,7 @@ export function makeAudiobookRouter({ booksDir, builtinBooksDir, dataDir, fetchI
       });
       res.send(result.audio);
     } catch (error) {
-      console.error('TTS error:', error.message);
+      console.error('TTS 请求失败:', error.status || error.name || 'Error');
       res.status(error.status || 502).json({ error: error.status ? error.message : '语音生成失败，请稍后重试' });
     }
   });

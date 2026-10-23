@@ -18,6 +18,8 @@ function Write-SupervisorLog([string]$message) {
 }
 
 function Find-Node {
+  $serviceRuntime = Join-Path $env:LOCALAPPDATA 'thiefbook\runtimes\node-v22.23.4\node.exe'
+  if (Test-Path -LiteralPath $serviceRuntime) { return $serviceRuntime }
   $preferred = 'C:\Code\Nodejs\node.exe'
   if (Test-Path -LiteralPath $preferred) { return $preferred }
   $command = Get-Command node.exe -ErrorAction SilentlyContinue

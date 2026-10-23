@@ -1,7 +1,6 @@
 // 摸鱼看书 · 阅读进度云同步服务
 // 进度按「同步码 + 小说 ID」隔离，采用 last-write-wins。
 import express from 'express';
-import cors from 'cors';
 import compression from 'compression';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -9,49 +8,72 @@ import { fileURLToPath } from 'node:url';
 import { makeStore } from './storage.js';
 import { makeAudiobookRouter } from './audiobook.js';
 import { makeBookContentRouter } from './book-content.js';
+import { createSecurity, positiveInt, uploadGuard } from './security.js';
 
 const envFile = path.join(path.dirname(fileURLToPath(import.meta.url)), '.env');
-if (fs.existsSync(envFile)) process.loadEnvFile(envFile);
+if (process.env.THIEFBOOK_ENV_FILE !== 'none' && fs.existsSync(envFile)) process.loadEnvFile(envFile);
 
 const PORT = process.env.PORT || 8787;
 const STATIC_DIR = process.env.STATIC_DIR || path.resolve(process.cwd(), '..', 'app', 'dist');
 const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), 'data');
 const BOOKS_DIR = process.env.BOOKS_DIR || path.join(DATA_DIR, 'books');
 const BUILTIN_BOOKS_DIR = path.join(STATIC_DIR, 'books');
-const BOOK_UPLOAD_CODE = process.env.BOOK_UPLOAD_CODE || 'eric-fuhan';
+const SYNC_CODE = process.env.SYNC_CODE || 'eric-fuhan';
+const security = createSecurity({ dataDir: DATA_DIR });
 const store = await makeStore();
 
 fs.mkdirSync(BOOKS_DIR, { recursive: true });
 
-const isValidCode = (c) => typeof c === 'string' && /^[\w一-龥-]{4,64}$/.test(c);
+const isValidCode = (c) => typeof c === 'string' && c === SYNC_CODE;
 const isValidBookId = (id) => typeof id === 'string' && /^[a-z0-9][a-z0-9_-]{0,63}$/i.test(id);
+const validTimestamp = (value) => value === undefined || (Number.isSafeInteger(value) && value >= 0 && value <= Date.now() + 300000);
+const validDevice = (value) => value === undefined || (typeof value === 'string' && value.length <= 40 && !/[\u0000-\u001f\u007f]/.test(value));
+const asyncRoute = (handler) => (req, res, next) => Promise.resolve(handler(req, res, next)).catch(next);
 
 const app = express();
-app.use(cors());
+app.disable('x-powered-by');
+app.set('trust proxy', false);
+app.use(security.audit);
+app.get('/api/health', (_req, res) => res.json({ ok: true }));
+app.use(security.rateLimit);
+app.use('/auth', security.router);
+// Let an existing PWA update its shell before application login. The private
+// tunnel still requires the owner's identity; all book/data APIs stay guarded.
+app.get(/^\/(?:sw\.js|registerSW\.js|workbox-[a-zA-Z0-9_-]+\.js|index\.html|manifest\.webmanifest|icon\.svg|assets\/[a-zA-Z0-9_.-]+\.(?:js|css))$/, (req, res, next) => {
+  const relative = req.path.slice(1);
+  const file = path.join(STATIC_DIR, relative);
+  if (!fs.existsSync(file)) return next();
+  res.sendFile(file);
+});
+app.use(security.requireAuth);
+app.use((req, res, next) => ['GET', 'HEAD', 'OPTIONS'].includes(req.method) ? next() : security.sameOrigin(req, res, next));
 app.use(compression());
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({ limit: '16kb' }));
 
-app.get('/api/health', (_req, res) => res.json({ ok: true, time: Date.now() }));
 app.use('/api/tts', makeAudiobookRouter({ booksDir: BOOKS_DIR, builtinBooksDir: BUILTIN_BOOKS_DIR, dataDir: DATA_DIR }));
 app.use('/api/book-content', makeBookContentRouter({ booksDir: BOOKS_DIR, builtinBooksDir: BUILTIN_BOOKS_DIR }));
 
 // 拉取某本书的进度
-app.get('/api/progress', async (req, res) => {
+app.get('/api/progress', asyncRoute(async (req, res) => {
   const { code, book } = req.query;
-  if (!isValidCode(code) || !book) return res.status(400).json({ error: 'bad params' });
+  if (!isValidCode(code) || !isValidBookId(book)) return res.status(400).json({ error: 'bad params' });
   res.json(await store.get(code, book));
-});
+}));
 
 // 上报进度（last-write-wins）
-app.post('/api/progress', async (req, res) => {
+app.post('/api/progress', asyncRoute(async (req, res) => {
   const { code, book, chapter, percent, updatedAt, device, mode, segment } = req.body || {};
-  if (!isValidCode(code) || !book || typeof chapter !== 'number')
+  if (!isValidCode(code) || !isValidBookId(book) || !Number.isInteger(chapter) || chapter < 0 || chapter > 1000000 ||
+      (percent !== undefined && (typeof percent !== 'number' || !Number.isFinite(percent) || percent < 0 || percent > 1)) ||
+      !validTimestamp(updatedAt) || !validDevice(device) ||
+      (mode !== undefined && mode !== 'audio' && mode !== 'text') ||
+      (segment !== undefined && (!Number.isInteger(segment) || segment < 0 || segment > 1000000)))
     return res.status(400).json({ error: 'bad params' });
   const incoming = {
     book,
     chapter,
     percent: Number(percent) || 0,
-    updatedAt: Number(updatedAt) || Date.now(),
+    updatedAt: updatedAt ?? Date.now(),
     device: String(device || 'unknown').slice(0, 40),
   };
   if (mode === 'audio' && Number.isInteger(segment) && segment >= 0) {
@@ -60,26 +82,18 @@ app.post('/api/progress', async (req, res) => {
   }
   const existing = await store.get(code, book);
   if (existing && existing.updatedAt > incoming.updatedAt) {
-    console.log(JSON.stringify({
-      event: 'progress-rejected', at: new Date().toISOString(), book,
-      incoming, current: existing,
-    }));
     return res.json({ accepted: false, current: existing });
   }
   await store.set(code, book, incoming);
-  console.log(JSON.stringify({
-    event: 'progress-accepted', at: new Date().toISOString(), book,
-    previous: existing, current: incoming,
-  }));
   res.json({ accepted: true, current: incoming });
-});
+}));
 
 // 列出某同步码下所有书的进度（保留给书架/诊断使用）
-app.get('/api/library', async (req, res) => {
+app.get('/api/library', asyncRoute(async (req, res) => {
   const { code } = req.query;
   if (!isValidCode(code)) return res.status(400).json({ error: 'bad code' });
   res.json(await store.list(code));
-});
+}));
 
 // ---------- 小说上传与书库 ----------
 const CHAPTER_RE = /^\s*第[零〇一二三四五六七八九十百千万两0-9]+章(?:\s|[　]|$|[^\S\r\n]|.)?/;
@@ -183,18 +197,18 @@ function listBookMetadata() {
   return [...byId.values()];
 }
 
-app.get('/api/current-book', async (req, res) => {
+app.get('/api/current-book', asyncRoute(async (req, res) => {
   const { code } = req.query;
   if (!isValidCode(code)) return res.status(400).json({ error: 'bad code' });
   res.json(await store.get(code, '__current_book__'));
-});
+}));
 
-app.post('/api/current-book', async (req, res) => {
+app.post('/api/current-book', asyncRoute(async (req, res) => {
   const { code, book, updatedAt, device } = req.body || {};
-  if (!isValidCode(code) || !isValidBookId(book)) return res.status(400).json({ error: 'bad params' });
+  if (!isValidCode(code) || !isValidBookId(book) || !validTimestamp(updatedAt) || !validDevice(device)) return res.status(400).json({ error: 'bad params' });
   const incoming = {
     book,
-    updatedAt: Number(updatedAt) || Date.now(),
+    updatedAt: updatedAt ?? Date.now(),
     device: String(device || 'unknown').slice(0, 40),
   };
   const existing = await store.get(code, '__current_book__');
@@ -203,16 +217,14 @@ app.post('/api/current-book', async (req, res) => {
   }
   await store.set(code, '__current_book__', incoming);
   res.json({ accepted: true, current: incoming });
-});
+}));
 
-app.get('/api/books', (req, res) => {
-  if (req.query.code !== BOOK_UPLOAD_CODE) return res.status(403).json({ error: 'forbidden' });
+app.get('/api/books', (_req, res) => {
   res.json(listBookMetadata());
 });
 
-app.post('/api/books', express.raw({ type: 'application/octet-stream', limit: '64mb' }), (req, res) => {
-  const { code, id, title } = req.query;
-  if (code !== BOOK_UPLOAD_CODE) return res.status(403).json({ error: 'forbidden' });
+app.post('/api/books', uploadGuard(), express.raw({ type: 'application/octet-stream', limit: positiveInt(process.env.BOOK_UPLOAD_MAX_BYTES, 16 * 1024 * 1024, 64 * 1024 * 1024) }), (req, res) => {
+  const { id, title } = req.query;
   if (!isValidBookId(id) || typeof title !== 'string' || !title.trim())
     return res.status(400).json({ error: 'bad params' });
   if (!Buffer.isBuffer(req.body) || !req.body.length)
@@ -252,7 +264,15 @@ if (fs.existsSync(STATIC_DIR)) {
   console.log(`🌐 已托管前端: ${STATIC_DIR}`);
 }
 
-app.listen(PORT, () => {
-  console.log(`📚 同步服务已启动: http://localhost:${PORT}`);
+app.use((error, _req, res, _next) => {
+  const status = error.type === 'entity.too.large' ? 413 : error.status || (error.type === 'entity.parse.failed' ? 400 : 500);
+  if (status >= 500) console.error('请求处理失败:', error.code || error.name || 'Error');
+  res.status(status).json({ error: status >= 500 ? '服务暂时不可用' : status === 413 ? '请求正文过大' : error.publicMessage || '请求无效' });
+});
+
+const server = app.listen(PORT, process.env.HOST || '127.0.0.1', () => {
+  console.log(`📚 同步服务已启动: http://localhost:${server.address().port}`);
   console.log(`📖 上传小说目录: ${BOOKS_DIR}`);
 });
+server.requestTimeout = 120000;
+server.headersTimeout = 15000;

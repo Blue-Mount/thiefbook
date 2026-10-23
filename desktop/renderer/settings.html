@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta http-equiv="Content-Security-Policy"
-      content="default-src 'self'; connect-src *; style-src 'self' 'unsafe-inline';" />
+      content="default-src 'self'; connect-src 'none'; style-src 'self' 'unsafe-inline';" />
     <link rel="stylesheet" href="panel.css" />
   </head>
   <body>
@@ -34,8 +34,10 @@
       </div>
 
       <h4>多端同步</h4>
-      <p class="hint">手机网页端与本端已自动同一份进度，无需再填同步码。服务器地址一般不用改。</p>
+      <p class="hint">手机与电脑共享进度。首次同步先登录微软隧道，再输入阅读器密码。看到登录成功后关闭登录窗口即可；本地阅读无需登录。</p>
       <div class="row"><label>服务器</label><input type="text" id="serverUrl" placeholder="https://vjqm1hqc-8787.jpe1.devtunnels.ms" /></div>
+      <div class="row"><button id="loginSync">登录同步服务</button><button id="checkSync">检查登录</button></div>
+      <p class="hint" id="syncStatus" role="status">正在检查同步服务登录状态…</p>
 
       <h4>当前小说</h4>
       <div class="row">

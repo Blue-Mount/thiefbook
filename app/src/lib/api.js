@@ -2,6 +2,9 @@
 // - serverUrl 为空时默认用「同源地址」（前端由同步服务托管的部署场景，最省心）。
 // - 单用户场景：不再让用户输「同步码」，改用内置固定身份，和桌面端保持一致
 //   （见 desktop/renderer/sync.js 的 SYNC_CODE，两端必须一致才能同一份进度）。
+import { requestSpeech } from './tts-request.js';
+import { authenticatedFetch } from './auth-fetch.js';
+
 export const SYNC_CODE = 'eric-fuhan';
 
 const REQUEST_TIMEOUT_MS = 8000;
@@ -10,7 +13,7 @@ async function request(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { ...options, signal: controller.signal });
+    return await authenticatedFetch(url, { ...options, signal: controller.signal });
   } finally {
     clearTimeout(timer);
   }
@@ -110,17 +113,12 @@ export function makeApi(getSync) {
   }
 
   async function ttsAudio(book, chapter, segment, voice, code, signal) {
-    const r = await fetch(`${base()}/api/tts/audio`, {
+    return requestSpeech(`${base()}/api/tts/audio`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ book, chapter, segment, voice, code }),
       signal,
-    });
-    if (!r.ok) {
-      const body = await r.json().catch(() => ({}));
-      throw new Error(body.error || `语音请求失败（${r.status}）`);
-    }
-    return { blob: await r.blob(), cost: Number(r.headers.get('X-TTS-Cost-CNY')) || 0 };
+    }, { fetchImpl: authenticatedFetch });
   }
 
   return { pull, push, health, listBooks, bookManifest, bookChapter, uploadBook, pullCurrentBook, pushCurrentBook,

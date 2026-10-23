@@ -44,6 +44,33 @@ async function init() {
   $('serverUrl').value = config.sync.serverUrl || '';
 
   const sync = makeSync(() => ({ serverUrl: ($('serverUrl').value || '').trim() }));
+  window.addEventListener('sync:auth-state', (event) => {
+    $('syncStatus').textContent = event.detail.needsLogin
+      ? '同步需要登录。点击“登录同步服务”，完成后关闭登录窗口。'
+      : '已连接同步服务。';
+  });
+  async function checkLogin() {
+    const connected = await sync.health();
+    if (connected) {
+      $('syncStatus').textContent = '已登录并连接同步服务，进度会自动同步。';
+      await refreshBookList(sync);
+      buildToc();
+    } else if (!$('syncStatus').textContent.includes('需要登录')) {
+      $('syncStatus').textContent = '同步暂未连接。可先登录，或检查服务器地址和网络。';
+    }
+  }
+  $('loginSync').addEventListener('click', async () => {
+    try {
+      await saveSync();
+      await window.api.loginSync();
+      $('syncStatus').textContent = '请在登录窗口完成微软登录和阅读器密码验证，然后关闭该窗口。';
+    } catch (error) {
+      $('syncStatus').textContent = error.message;
+    }
+  });
+  $('checkSync').addEventListener('click', checkLogin);
+  window.api.onSyncLoginClosed?.(() => { void checkLogin(); });
+  void checkLogin();
   void refreshBookList(sync);
   $('switchBook').addEventListener('click', () => {
     const select = $('bookSelect');
@@ -69,9 +96,10 @@ async function init() {
   buildToc();
 }
 
-function saveSync() {
+async function saveSync() {
   const serverUrl = ($('serverUrl').value || '').trim();
-  return window.api.setConfig({ sync: { serverUrl } });
+  config = await window.api.setConfig({ sync: { serverUrl } });
+  return config;
 }
 
 async function refreshBookList(sync) {

@@ -1,18 +1,22 @@
 // 与同步服务通信，接口与手机网页端完全一致。
-// 单用户场景：不再让用户输「同步码」，改用一个内置固定身份，
-// 手机端与电脑端只要都用这个常量就自动同一份进度（两端必须一致，见 app/src/lib/api.js）。
+// 同步码仅用来标识同一份进度，访问权限由登录会话控制。
 export const SYNC_CODE = 'eric-fuhan';
 
-const REQUEST_TIMEOUT_MS = 8000;
+function showAuthState(needsLogin) {
+  // 阅读保持可用；用悬停提示与设置页状态提示登录，不覆盖本地正文。
+  const bar = document.getElementById('bar');
+  if (bar) bar.title = needsLogin ? '同步服务需要登录：右键 → 登录同步服务，或在设置中登录。本地阅读不受影响。' : '';
+  window.dispatchEvent(new CustomEvent('sync:auth-state', { detail: { needsLogin } }));
+}
+window.api.onSyncAuthState?.(({ needsLogin }) => showAuthState(needsLogin));
 
-async function request(url, options = {}) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
+export async function request(url, options = {}) {
+  const result = await window.api.syncRequest({ url, method: options.method || 'GET', body: options.body });
+  if (result.status === 401 || result.status === 403 || (result.status >= 300 && result.status < 400)) {
+    showAuthState(true);
+    throw new Error('同步服务需要登录，请在设置中点击“登录同步服务”');
   }
+  return new Response([204, 205].includes(result.status) ? null : result.body, { status: result.status, headers: result.headers });
 }
 
 export function makeSync(getSync) {
@@ -40,8 +44,8 @@ export function makeSync(getSync) {
 
   async function health() {
     try {
-      const r = await request(`${base()}/api/health`, { cache: 'no-store' });
-      return r.ok;
+      const r = await request(`${base()}/auth/session`, { cache: 'no-store' });
+      return r.ok && (await r.json()).authenticated === true;
     } catch {
       return false;
     }
