@@ -319,6 +319,7 @@ async function init() {
   window.api.onSwitchBook((p) => switchToBook(p.id, p.updatedAt || Date.now(), p.broadcast !== false));
   window.api.onShown(() => pullNow());
   window.api.onHiding(() => pushNow());
+  window.api.onSyncLoginClosed?.(() => { void pullNow(); void syncCurrentBook(); });
 
   // 云端拉取一次，并定时轮询捕捉手机端的更新
   pullNow();

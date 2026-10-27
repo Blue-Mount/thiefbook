@@ -290,14 +290,18 @@ const statusText = computed(() => ({
 async function refreshLibrary() {
   try {
     books.value = await api.listBooks();
+    return true;
   } catch {
     try {
       const r = await fetch('./books/index.json', { cache: 'no-store' });
       if (!r.ok) throw new Error(String(r.status));
       books.value = await r.json();
     } catch {
-      books.value = [{ id: 'fuhan', title: '覆汉', author: '', chapterCount: 0 }];
+      books.value = [];
     }
+    // The bundled index can omit uploaded books. It is not evidence that the
+    // remembered book was deleted, especially while authentication is failing.
+    return false;
   }
 }
 
@@ -360,7 +364,6 @@ async function syncCurrentBook(notify = true) {
     const remote = await api.pullCurrentBook();
     const local = storage.getCurrentBookState();
     if (remote?.book && remote.updatedAt > (local?.updatedAt || 0)) {
-      if (!books.value.some((b) => b.id === remote.book)) return;
       storage.setCurrentBook(remote.book, remote.updatedAt, remote.device || '');
       if (remote.book !== activeBookId()) {
         await switchBook(remote.book, notify, false);
@@ -429,11 +432,13 @@ function onPageHide() {
   void pushNow();
 }
 onMounted(async () => {
-  await refreshLibrary();
+  const libraryLoaded = await refreshLibrary();
   await syncCurrentBook(false);
-  if (!books.value.some((b) => b.id === activeBookId())) {
+  if (libraryLoaded && books.value.length && !books.value.some((b) => b.id === activeBookId())) {
     currentBookId.value = books.value[0]?.id || 'fuhan';
-    storage.setCurrentBook(currentBookId.value, Date.now(), device);
+    // Automatic recovery is not a user selection and must not outrank the
+    // last real selection on another device after sign-in/network recovery.
+    storage.setCurrentBook(currentBookId.value, 0, device);
   }
   await switchBook(activeBookId(), false, false);
 

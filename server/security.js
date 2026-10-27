@@ -129,9 +129,16 @@ export function createSecurity({ dataDir, env = process.env, now = Date.now }) {
   }
 
   const router = express.Router();
-  router.get('/login', (_req, res) => {
+  router.get('/desktop', requireAuth, (_req, res) => {
+    res.set('Content-Security-Policy', "default-src 'none'; frame-ancestors 'none'; base-uri 'none'");
+    res.type('html').send('<!doctype html><meta charset="utf-8"><title>同步登录成功</title><p>同步登录成功，此窗口将自动关闭。</p>');
+  });
+  router.get('/login', (req, res) => {
+    const destination = req.query.desktop === '1' ? '/auth/desktop' : '/';
+    if (authenticate(req)) return res.redirect(302, destination);
     res.set('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'");
-    res.type('html').send('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>摸鱼看书 · 登录</title><style>body{max-width:340px;margin:15vh auto;padding:24px;font:16px system-ui;background:#f7f4ed;color:#292d32}input,button{box-sizing:border-box;width:100%;padding:12px;margin-top:16px;font:inherit}button{cursor:pointer}small{display:block;margin-top:16px;color:#666}</style><h1>摸鱼看书</h1><form method="post" action="/auth/login"><label>访问密码<input type="password" name="code" required maxlength="512" autocomplete="current-password" autofocus></label><button type="submit">登录</button></form><small>仅供本人使用。登录状态保留30天。</small></html>');
+    const action = req.query.desktop === '1' ? '/auth/login?desktop=1' : '/auth/login';
+    res.type('html').send(`<!doctype html><html lang="zh-CN"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>摸鱼看书 · 登录</title><style>body{max-width:340px;margin:15vh auto;padding:24px;font:16px system-ui;background:#f7f4ed;color:#292d32}input,button{box-sizing:border-box;width:100%;padding:12px;margin-top:16px;font:inherit}button{cursor:pointer}small{display:block;margin-top:16px;color:#666}</style><h1>摸鱼看书</h1><form method="post" action="${action}"><label>访问密码<input type="password" name="code" required maxlength="512" autocomplete="current-password" autofocus></label><button type="submit">登录</button></form><small>阅读器密码登录保留30天；微软隧道登录单独有效，过期时需恢复。</small></html>`);
   });
   router.post('/login', sameOrigin, (req, res, next) => {
     const entry = bucket(failures, req.socket.remoteAddress, 15 * 60000);
@@ -156,7 +163,7 @@ export function createSecurity({ dataDir, env = process.env, now = Date.now }) {
     req.authType = 'session';
     req.securityEvent = 'login-succeeded';
     res.cookie(COOKIE, `${value}.${sign(value)}`, { ...cookieOptions, maxAge: SESSION_MS });
-    res.redirect(302, '/');
+    res.redirect(302, req.query.desktop === '1' ? '/auth/desktop' : '/');
   });
   router.get('/session', requireAuth, (_req, res) => res.json({ authenticated: true }));
   router.post('/logout', sameOrigin, requireAuth, (req, res) => {

@@ -46,7 +46,7 @@ async function init() {
   const sync = makeSync(() => ({ serverUrl: ($('serverUrl').value || '').trim() }));
   window.addEventListener('sync:auth-state', (event) => {
     $('syncStatus').textContent = event.detail.needsLogin
-      ? '同步需要登录。点击“登录同步服务”，完成后关闭登录窗口。'
+      ? '同步需要恢复登录；若未自动恢复，请点击“登录同步服务”。'
       : '已连接同步服务。';
   });
   async function checkLogin() {
@@ -63,7 +63,7 @@ async function init() {
     try {
       await saveSync();
       await window.api.loginSync();
-      $('syncStatus').textContent = '请在登录窗口完成微软登录和阅读器密码验证，然后关闭该窗口。';
+      $('syncStatus').textContent = '正在恢复登录；需要验证时会显示窗口，成功后自动关闭。';
     } catch (error) {
       $('syncStatus').textContent = error.message;
     }

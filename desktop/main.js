@@ -4,7 +4,8 @@ const { app, BrowserWindow, globalShortcut, ipcMain, Menu, screen, session } = r
 const path = require('node:path');
 const fs = require('node:fs');
 const { pathToFileURL } = require('node:url');
-const { safeServerUrl, validateRequest, isLoginNavigationAllowed, isAuthenticationResponse, isAuthenticationRedirectError } = require('./renderer/network-policy.cjs');
+const { safeServerUrl, validateRequest, isAuthenticationResponse, isAuthenticationRedirectError } = require('./renderer/network-policy.cjs');
+const { createSyncLogin } = require('./renderer/sync-login.cjs');
 
 const DEFAULT_SERVER_URL = 'https://vjqm1hqc-8787.jpe1.devtunnels.ms';
 const LEGACY_SERVER_URL = 'http://123.57.90.23:8787';
@@ -90,7 +91,6 @@ function saveConfig() {
 let reader = null;
 let settingsWin = null;
 let jumpWin = null;
-let loginWin = null;
 let syncNeedsLogin = false;
 
 function serverUrl() {
@@ -116,36 +116,35 @@ function authenticationRequiredResponse() {
   return { status: 401, ok: false, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ error: '请在设置中点击“登录同步服务”' }) };
 }
 
-function openSyncLogin() {
-  const base = safeServerUrl(serverUrl());
-  if (loginWin && !loginWin.isDestroyed()) {
-    loginWin.show();
-    loginWin.focus();
-    return;
-  }
-  loginWin = new BrowserWindow({
+const syncLogin = createSyncLogin({
+  serverUrl,
+  createWindow: () => new BrowserWindow({
     width: 640,
     height: 760,
-    title: '登录同步服务（完成后关闭此窗口）',
+    show: false,
+    title: '登录同步服务（成功后自动关闭）',
     autoHideMenuBar: true,
     webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true },
-  });
-  const authWindow = loginWin;
-  authWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-  for (const eventName of ['will-navigate', 'will-redirect']) {
-    authWindow.webContents.on(eventName, (event, target) => {
-      if (!isLoginNavigationAllowed(base.href, target)) event.preventDefault();
+  }),
+  checkSession: async (base) => {
+    const response = await session.defaultSession.fetch(new URL('/auth/session', base).href, {
+      headers: { Origin: base.origin }, credentials: 'include', cache: 'no-store',
+      redirect: 'manual', signal: AbortSignal.timeout(5000),
     });
-  }
-  authWindow.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-  authWindow.on('closed', () => {
-    loginWin = null;
-    // 关闭后由设置页重新测试登录，读书窗口下次轮询会自动恢复同步。
+    return response.ok && /application\/json/i.test(response.headers.get('content-type') || '') &&
+      (await response.json()).authenticated === true;
+  },
+  onAuthenticated: () => setSyncNeedsLogin(false),
+  onNeedsLogin: () => setSyncNeedsLogin(true),
+  onClosed: () => {
     for (const win of [reader, settingsWin, jumpWin]) {
       if (win && !win.isDestroyed()) win.webContents.send('sync:login-closed');
     }
-  });
-  authWindow.loadURL(new URL('/auth/login', base).href).catch(() => setSyncNeedsLogin(true));
+  },
+});
+
+function openSyncLogin() {
+  syncLogin.open();
 }
 
 function readerHeight() {
@@ -319,31 +318,40 @@ ipcMain.handle('sync:request', async (event, request) => {
   if (!trustedRenderer(event)) throw new Error('不可信的同步请求来源');
   const checked = validateRequest(serverUrl(), request);
   const origin = safeServerUrl(serverUrl()).origin;
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), checked.isBook ? 30000 : 8000);
-  try {
-    const response = await session.defaultSession.fetch(checked.url, {
-      method: checked.method,
-      headers: { Origin: origin, ...(checked.method === 'POST' ? { 'Content-Type': 'application/json' } : {}) },
-      body: checked.body,
-      credentials: 'include',
-      cache: 'no-store',
-      redirect: 'manual',
-      signal: controller.signal,
-    });
-    const contentType = response.headers.get('content-type') || '';
-    if (isAuthenticationResponse(response.status, contentType)) {
-      // 不向 renderer 转发 Location / Set-Cookie，认证跳转只发生在登录窗口。
-      return authenticationRequiredResponse();
+  async function fetchOnce() {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), checked.isBook ? 30000 : 8000);
+    try {
+      const response = await session.defaultSession.fetch(checked.url, {
+        method: checked.method,
+        headers: { Origin: origin, ...(checked.method === 'POST' ? { 'Content-Type': 'application/json' } : {}) },
+        body: checked.body,
+        credentials: 'include',
+        cache: 'no-store',
+        redirect: 'manual',
+        signal: controller.signal,
+      });
+      const contentType = response.headers.get('content-type') || '';
+      if (isAuthenticationResponse(response.status, contentType)) {
+        // 不向 renderer 转发 Location / Set-Cookie，认证跳转只发生在登录窗口。
+        return authenticationRequiredResponse();
+      }
+      if (response.ok) setSyncNeedsLogin(false);
+      return { status: response.status, ok: response.ok, headers: { 'content-type': contentType }, body: await response.text() };
+    } catch (error) {
+      if (isAuthenticationRedirectError(error)) return authenticationRequiredResponse();
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
-    if (response.ok) setSyncNeedsLogin(false);
-    return { status: response.status, ok: response.ok, headers: { 'content-type': contentType }, body: await response.text() };
-  } catch (error) {
-    if (isAuthenticationRedirectError(error)) return authenticationRequiredResponse();
-    throw error;
-  } finally {
-    clearTimeout(timer);
   }
+  const result = await fetchOnce();
+  if (result.status === 401 && await syncLogin.restore()) {
+    // 恢复期间可能修改服务器配置，旧请求不能发送给新站点。
+    if (safeServerUrl(serverUrl()).origin !== origin) return result;
+    return fetchOnce();
+  }
+  return result;
 });
 
 ipcMain.handle('config:get', () => config);
@@ -358,7 +366,7 @@ ipcMain.handle('config:set', (e, patch) => {
   if (patch && (patch.width != null || patch.height != null || patch.settings)) {
     applyWindowConfig();
   }
-  if (serverUrl() !== previousServer && loginWin && !loginWin.isDestroyed()) loginWin.close();
+  if (serverUrl() !== previousServer) syncLogin.cancel();
   // 广播给「除发起方之外」的窗口：避免阅读器保存自身进度时被回声，触发无谓重排。
   for (const w of [reader, settingsWin, jumpWin].filter(Boolean)) {
     if (!w.isDestroyed() && w.webContents.id !== e.sender.id) {

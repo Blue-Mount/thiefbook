@@ -8,13 +8,17 @@ import { ref, reactive, computed, nextTick, watch } from 'vue';
 const script = readFileSync(new URL('../App.vue', import.meta.url), 'utf8')
   .split('<script setup>')[1].split('</script>')[0].replace(/^import .*;\r?\n/gm, '');
 
-async function reader({ local, remote = local } = {}) {
+async function reader({ local, remote = local, selection = { book: 'fuhan', updatedAt: 10, device: 'phone' },
+  remoteSelection = selection, libraryFails = false, fallbackBooks = [{ id: 'fuhan' }], fallbackFails = false,
+  authExpired = false } = {}) {
   const events = new Map();
   const timers = new Map();
   const intervals = [];
   const pushes = [];
   const progresses = new Map(local ? [['fuhan', structuredClone(local)]] : []);
-  let current = { book: 'fuhan', updatedAt: 10, device: 'phone' };
+  let current = structuredClone(selection);
+  const selectionPushes = [];
+  const manifests = [];
   let cloud = remote && structuredClone(remote);
   let mounted;
   let id = 0;
@@ -29,11 +33,21 @@ async function reader({ local, remote = local } = {}) {
   };
   Object.assign(doc, { addEventListener: browser.addEventListener, removeEventListener: browser.removeEventListener });
   const api = {
-    listBooks: async () => [{ id: 'fuhan' }, { id: 'other' }],
-    bookManifest: async (book) => ({ id: book, title: book, chapters: Array.from({ length: 8 }, (_, id) => ({ id, title: `${id}` })) }),
+    listBooks: async () => {
+      if (libraryFails) throw new Error('登录状态已过期');
+      return [{ id: 'fuhan' }, { id: 'other' }];
+    },
+    bookManifest: async (book) => {
+      manifests.push(book);
+      if (authExpired) throw new Error('登录状态已过期');
+      return { id: book, title: book, chapters: Array.from({ length: 8 }, (_, id) => ({ id, title: `${id}` })) };
+    },
     bookChapter: async (_book, id) => ({ id, title: `${id}`, paragraphs: ['正文'] }),
-    pullCurrentBook: async () => current,
-    pushCurrentBook: async () => {},
+    pullCurrentBook: async () => {
+      if (authExpired) throw new Error('登录状态已过期');
+      return remoteSelection;
+    },
+    pushCurrentBook: async (book, updatedAt) => { selectionPushes.push({ book, updatedAt }); },
     pull: async () => cloud,
     push: async (book, progress) => {
       pushes.push({ book, ...structuredClone(progress) });
@@ -44,6 +58,10 @@ async function reader({ local, remote = local } = {}) {
   };
   const context = vm.createContext({
     ref, reactive, computed, nextTick, watch, console, document: doc, window: browser,
+    fetch: async () => {
+      if (fallbackFails) throw new Error('offline');
+      return { ok: true, json: async () => fallbackBooks };
+    },
     onMounted: (fn) => { mounted = fn; }, onBeforeUnmount: () => {},
     setTimeout: (fn, delay) => { timers.set(++id, { fn, delay }); return id; },
     clearTimeout: (key) => timers.delete(key),
@@ -62,7 +80,8 @@ async function reader({ local, remote = local } = {}) {
   await mounted();
   const settle = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
   return {
-    ...context.reader, doc, events, pushes, intervals, api,
+    ...context.reader, doc, events, pushes, intervals, api, manifests, selectionPushes,
+    selection: () => structuredClone(current),
     progress: (book = 'fuhan') => progresses.get(book),
     cloud: () => cloud,
     setRemote: (p) => { cloud = structuredClone(p); },
@@ -76,6 +95,36 @@ async function reader({ local, remote = local } = {}) {
 }
 
 const position = (chapter, updatedAt, percent = 0.5) => ({ book: 'fuhan', chapter, percent, updatedAt, device: 'desktop' });
+
+for (const fallbackFails of [false, true]) {
+  test(`expired login preserves the selected uploaded book (fallback fails: ${fallbackFails})`, async () => {
+    const selection = { book: 'other', updatedAt: 200, device: 'phone' };
+    const expired = await reader({ selection, libraryFails: true, fallbackFails, authExpired: true });
+    assert.equal(expired.selection().book, 'other');
+    assert.equal(expired.selection().updatedAt, 200);
+    assert.deepEqual(expired.manifests, ['other']);
+    assert.deepEqual(expired.selectionPushes, []);
+    const restored = await reader({ selection: expired.selection() });
+    assert.equal(restored.selection().book, 'other');
+    assert.deepEqual(restored.manifests, ['other']);
+  });
+}
+
+test('an incomplete fallback library still allows restoring the newer server selection', async () => {
+  const app = await reader({ libraryFails: true,
+    remoteSelection: { book: 'other', updatedAt: 200, device: 'desktop' } });
+  assert.equal(app.selection().book, 'other');
+  assert.equal(app.selection().updatedAt, 200);
+  assert.deepEqual(app.manifests, ['other']);
+  assert.deepEqual(app.selectionPushes, []);
+});
+
+test('automatic fallback for a deleted book does not create a new selection timestamp', async () => {
+  const app = await reader({ selection: { book: 'deleted', updatedAt: 200, device: 'phone' } });
+  assert.equal(app.selection().book, 'fuhan');
+  assert.equal(app.selection().updatedAt, 0);
+  assert.deepEqual(app.selectionPushes, []);
+});
 
 test('startup restoration and page exit preserve the actual reading timestamp', async () => {
   const local = position(1, 100);

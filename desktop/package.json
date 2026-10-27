@@ -1,6 +1,6 @@
 {
   "name": "thiefbook-desktop",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "description": "摸鱼看书 · Win11 桌面隐蔽阅读器（Electron）",
   "main": "main.js",
   "scripts": {

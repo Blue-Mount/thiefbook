@@ -7,11 +7,12 @@ const os = require('node:os');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const { isAuthenticationRedirectError } = require('./renderer/network-policy.cjs');
+const { createSyncLogin } = require('./renderer/sync-login.cjs');
 
 app.setPath('userData', fs.mkdtempSync(path.join(os.tmpdir(), 'thiefbook-session-test-')));
 const resultPath = process.argv[2];
 const observed = {};
-const timeout = setTimeout(() => finish({ ok: false, error: 'Electron smoke test timed out' }), 20000);
+const timeout = setTimeout(() => finish({ ok: false, error: 'Electron smoke test timed out' }), 40000);
 function finish(result) {
   clearTimeout(timeout);
   result = { ...result, ...observed };
@@ -29,17 +30,49 @@ app.whenReady().then(async () => {
   let cookieObserved = false;
   let fetchOriginAbsent = false;
   let fetchSiteAbsent = false;
+  let tunnelExpired = false;
+  let passwordValid = true;
+  let unsafeRedirect = false;
+  let loginRequests = 0;
   const foreign = http.createServer((_request, response) => {
     foreignRequests += 1;
     response.end('redirect reached');
   });
   const foreignUrl = await listen(foreign);
   const server = http.createServer((request, response) => {
-    if (request.url === '/auth/login') {
+    if (request.url === '/auth/login?desktop=1') {
+      loginRequests++;
+      if (unsafeRedirect) {
+        response.writeHead(302, { Location: foreignUrl });
+        return response.end();
+      }
+      if (tunnelExpired) {
+        response.writeHead(302, { Location: '/tunnel/refresh' });
+        return response.end();
+      }
+      if (request.method === 'POST') {
+        passwordValid = true;
+        response.writeHead(302, { Location: '/auth/desktop' });
+        return response.end();
+      }
+      if (passwordValid) {
+        response.writeHead(302, { Location: '/auth/desktop' });
+        return response.end();
+      }
+      response.writeHead(200, { 'Content-Type': 'text/html' });
+      return response.end('<!doctype html><form method="post" action="/auth/login?desktop=1"><input name="code" value="local-test-only"><button>Login</button></form>');
+    } else if (request.url === '/tunnel/refresh') {
+      tunnelExpired = false;
+      response.writeHead(302, { Location: '/auth/login?desktop=1' });
+      return response.end();
+    } else if (request.url === '/auth/desktop') {
+      response.writeHead(200, { 'Content-Type': 'text/html' });
+      return response.end('<!doctype html><title>Desktop login complete</title>');
+    } else if (request.url === '/auth/login') {
       response.writeHead(200, { 'Content-Type': 'text/html', 'Set-Cookie': 'tb_session=local-smoke-only; HttpOnly; SameSite=Lax; Path=/; Max-Age=60' });
       response.end('<!doctype html><title>Local smoke login</title>Signed in');
     } else if (request.url === '/auth/session') {
-      cookieObserved = (request.headers.cookie || '').includes('tb_session=local-smoke-only');
+      cookieObserved = passwordValid && !tunnelExpired && (request.headers.cookie || '').includes('tb_session=local-smoke-only');
       fetchOriginAbsent = !request.headers.origin;
       fetchSiteAbsent = !request.headers['sec-fetch-site'];
       observed.fetchOrigin = request.headers.origin || null;
@@ -87,8 +120,60 @@ app.whenReady().then(async () => {
     redirectCancelled = true;
   }
   assert.equal(foreignRequests, 0);
+  const windows = [];
+  let authenticatedCount = 0;
+  let clock = Date.now();
+  const login = createSyncLogin({
+    serverUrl: () => base,
+    createWindow: () => {
+      const window = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
+      windows.push(window);
+      return window;
+    },
+    checkSession: async () => {
+      const result = await session.defaultSession.fetch(`${base}/auth/session`, { credentials: 'include', redirect: 'manual' });
+      return result.ok && (await result.json()).authenticated === true;
+    },
+    onAuthenticated: () => authenticatedCount++,
+    onNeedsLogin: () => {}, onClosed: () => {}, now: () => clock,
+  });
+  tunnelExpired = true;
+  const firstRestore = login.restore();
+  assert.equal(login.restore(), firstRestore, 'concurrent requests share one recovery');
+  assert.equal(await firstRestore, true);
+  assert.equal(windows.length, 1);
+  assert.equal(windows[0].isDestroyed(), true);
+  assert.equal(authenticatedCount, 1);
+  observed.silentTunnelRecovery = true;
+
+  clock += 60001;
+  passwordValid = false;
+  assert.equal(await login.restore(), false, 'missing password never counts as authenticated');
+  assert.equal(windows[1].isDestroyed(), true);
+  const beforeCooldown = loginRequests;
+  assert.equal(await login.restore(), false);
+  assert.equal(loginRequests, beforeCooldown, 'failed recovery respects cooldown');
+  observed.recoveryCooldown = true;
+
+  login.open();
+  const interactive = windows[2];
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('login form did not appear')), 5000);
+    interactive.once('show', () => { clearTimeout(timer); resolve(); });
+  });
+  const closed = new Promise((resolve) => interactive.once('closed', resolve));
+  await interactive.webContents.executeJavaScript('document.querySelector("form").requestSubmit()');
+  await closed;
+  assert.equal(authenticatedCount, 2);
+  observed.passwordLoginAutoCloses = true;
+
+  clock += 60001;
+  unsafeRedirect = true;
+  assert.equal(await login.restore(), false);
+  assert.equal(foreignRequests, 0, 'recovery must also block off-allowlist navigations');
+  observed.recoveryBlocksForeignNavigation = true;
   win.destroy();
   server.close();
   foreign.close();
   finish({ ok: true, httpOnlyLaxCookieShared: cookieObserved, fetchOriginAbsent, fetchSiteAbsent, redirectStatus, redirectCancelled, foreignRequests });
-}).catch((error) => finish({ ok: false, error: error.message }));
+}).catch((error) => finish({ ok: false, error: error.stack || error.message }));

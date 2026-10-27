@@ -112,6 +112,29 @@ test('mutation and login deny cross-site origins, while originless authenticated
   assert.match(logout.headers.get('set-cookie'), /Expires=Thu, 01 Jan 1970/);
 });
 
+test('valid sessions skip the password form and desktop login finishes without opening the reader', async () => {
+  const signedIn = await login(code);
+  const headers = { Cookie: signedIn.headers.get('set-cookie').split(';')[0] };
+  for (const [route, destination] of [['/auth/login', '/'], ['/auth/login?desktop=1', '/auth/desktop'],
+    ['/auth/login?desktop=https://evil.example', '/']]) {
+    const response = await fetch(`${base}${route}`, { headers, redirect: 'manual' });
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get('location'), destination);
+  }
+  const anonymous = await fetch(`${base}/auth/login?desktop=1`);
+  assert.equal(anonymous.status, 200);
+  assert.match(await anonymous.text(), /action="\/auth\/login\?desktop=1"/);
+  const desktopLogin = await fetch(`${base}/auth/login?desktop=1`, {
+    method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({ code }), redirect: 'manual',
+  });
+  assert.equal(desktopLogin.headers.get('location'), '/auth/desktop');
+  const completed = await fetch(`${base}/auth/desktop`, { headers });
+  assert.equal(completed.status, 200);
+  assert.match(await completed.text(), /同步登录成功/);
+  assert.equal((await fetch(`${base}/auth/desktop`)).status, 401);
+});
+
 test('progress validates namespaces, identifiers, coordinates, clocks and storage quotas', async () => {
   const body = { code: 'eric-fuhan', book: 'sample', chapter: 1, percent: 0.25, updatedAt: Date.now(), device: 'test' };
   for (const bad of [

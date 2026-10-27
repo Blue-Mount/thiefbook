@@ -1,8 +1,8 @@
 # 本人访问与安全维护
 
-公网入口使用 Dev Tunnel 的 Owner only 访问控制。手机浏览器先登录创建隧道的 Microsoft 账号，再在 `/auth/login` 输入阅读器访问密码。桌面端在设置中点击“登录同步服务”，登录窗口与同步请求共享 Cookie。旧版桌面端需要更新后才能同步；本地缓存仍可阅读。
+公网入口使用 Dev Tunnel 的 Owner only 访问控制。手机浏览器先登录创建隧道的 Microsoft 账号，再在 `/auth/login` 输入阅读器访问密码。桌面端登录窗口与同步请求共享持久化的默认 Cookie 会话。1.1.5 起，同步遇到认证过期时会用隐藏窗口尝试恢复隧道登录，同一时刻只进行一次，失败后冷却60秒；恢复失败才需要手动点击“登录同步服务”。手动登录成功后窗口自动关闭，不再进入网页阅读器。API 请求本身仍禁止跟随认证重定向，登录窗口仍限制导航域名。旧版桌面端需要更新；本地缓存仍可阅读。
 
-`server/.env` 必须配置随机 `WEB_ACCESS_CODE`（至少24字符）、`AUTH_SESSION_SECRET`（至少32字符）及准确的 HTTPS `PUBLIC_ORIGIN`。这些值不能写入前端、Git、截图或日志。同步码只用于定位原有进度，不承担鉴权。浏览器会话有效期30天，Cookie 为 HttpOnly、SameSite=Lax、Secure；修改会话密钥可使所有旧会话失效。
+`server/.env` 必须配置随机 `WEB_ACCESS_CODE`（至少24字符）、`AUTH_SESSION_SECRET`（至少32字符）及准确的 HTTPS `PUBLIC_ORIGIN`。这些值不能写入前端、Git、截图或日志。同步码只用于定位原有进度，不承担鉴权。阅读器密码会话有效期30天，Cookie 为 HttpOnly、SameSite=Lax、Secure；修改会话密钥可使所有旧会话失效。外层微软隧道登录独立过期，不受此30天控制；账号要求交互验证时需人工完成。已有有效密码会话时再次打开登录入口会直接跳过密码页。
 
 家中常驻服务优先使用 `%LOCALAPPDATA%\thiefbook\runtimes\node-v22.23.4\node.exe`，与其他项目的 Node 安装分开。安装新安全补丁时，应核验官方 SHA-256、运行测试，再更新守护脚本的运行时路径并重启服务。容器部署需传入同样的秘密环境变量，并通过 `HOST=0.0.0.0` 监听容器网卡；Windows 默认仅监听 `127.0.0.1`。
 
