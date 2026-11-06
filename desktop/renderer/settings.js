@@ -72,12 +72,19 @@ async function init() {
   window.api.onSyncLoginClosed?.(() => { void checkLogin(); });
   void checkLogin();
   void refreshBookList(sync);
+  window.api.onConfigChanged((cfg) => { config = cfg; });
+  window.api.onBookSwitchResult((result) => {
+    $('switchBook').disabled = false;
+    $('bookStatus').textContent = result.ok ? '已切换小说。' : `切换失败：${result.error}`;
+    if (result.ok) buildToc();
+  });
   $('switchBook').addEventListener('click', () => {
     const select = $('bookSelect');
     const option = select.options[select.selectedIndex];
+    if (!select.value) return;
+    $('switchBook').disabled = true;
+    $('bookStatus').textContent = `正在加载 ${option?.textContent || select.value}…`;
     window.api.switchBook({ id: select.value, title: option?.textContent || select.value });
-    config.currentBookId = select.value;
-    buildToc();
   });
 
   // 绑定：改动即时生效（setConfig 会广播给阅读器）

@@ -101,6 +101,7 @@ function loadChapter(idx, percent = 0, persist = true) {
   }
 }
 function nextPage() {
+  if (!book) return;
   if (pageIndex < pages.length - 1) {
     pageIndex++;
     render();
@@ -111,6 +112,7 @@ function nextPage() {
   }
 }
 function prevPage() {
+  if (!book) return;
   if (pageIndex > 0) {
     pageIndex--;
     render();
@@ -174,6 +176,7 @@ function applyRemote(remote) {
 }
 async function pullNow() {
   try {
+    if (!book) return;
     const remote = await sync.pull(activeBookId());
     applyRemote(remote);
   } catch {
@@ -181,15 +184,18 @@ async function pullNow() {
   }
 }
 
+let switchGeneration = 0;
 async function switchToBook(bookId, updatedAt = Date.now(), broadcast = false) {
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(bookId)) return;
-  if (book && bookId === activeBookId()) return;
+  if (book && bookId === book.id) return { ok: true };
+  const generation = ++switchGeneration;
   const previousBookId = activeBookId();
   if (book) {
     void pushNow(previousBookId);
   }
   try {
     const loaded = await loadBook(config.sync.serverUrl, bookId);
+    if (generation !== switchGeneration) return { ok: false, error: '已被后续切换替代' };
     book = loaded;
     config.currentBookId = bookId;
     config.currentBookTitle = `${loaded.title}${loaded.author ? ` · ${loaded.author}` : ''}`;
@@ -201,12 +207,16 @@ async function switchToBook(bookId, updatedAt = Date.now(), broadcast = false) {
       currentBookUpdatedAt: updatedAt,
       progress: config.progress,
     });
+    if (generation !== switchGeneration) return { ok: false, error: '已被后续切换替代' };
     const local = activeProgress(bookId);
     loadChapter(local?.chapter || 0, local?.percent || 0, false);
-    if (broadcast) await sync.pushCurrentBook(bookId, updatedAt, config.device);
+    // 本地切换已完成；断网时由下一次轮询补传，不能误报为加载失败。
+    if (broadcast) await sync.pushCurrentBook(bookId, updatedAt, config.device).catch(() => {});
     await pullNow();
-  } catch {
-    bar.textContent = '⚠ 小说加载失败，请检查服务器后重试';
+    return { ok: true };
+  } catch (error) {
+    if (!book) bar.textContent = '⚠ 小说加载失败，可在设置中登录或重新切换';
+    return { ok: false, error: error.message || '小说加载失败，请检查服务器后重试' };
   }
 }
 
@@ -294,15 +304,7 @@ function onConfigChanged(cfg) {
 async function init() {
   config = await window.api.getConfig();
   applyStyle();
-  try {
-    book = await loadBook(config.sync.serverUrl, activeBookId());
-  } catch (e) {
-    bar.textContent = '⚠ 书籍加载失败，请检查网络后重启';
-    return;
-  }
-  const local = activeProgress();
-  // 仅恢复位置；没有本地记录时显示第一章，但绝不把第一章自动推到云端。
-  loadChapter(local?.chapter || 0, local?.percent || 0, false);
+  // 先注册交互。首次下载失败也必须能打开菜单、登录和重新切换。
 
   bar.addEventListener('contextmenu', (e) => {
     e.preventDefault();
@@ -315,14 +317,19 @@ async function init() {
   window.addEventListener('wheel', onWheel, { passive: false });
 
   window.api.onConfigChanged(onConfigChanged);
-  window.api.onGoto((p) => loadChapter(p.chapter, p.percent || 0));
-  window.api.onSwitchBook((p) => switchToBook(p.id, p.updatedAt || Date.now(), p.broadcast !== false));
+  window.api.onGoto((p) => { if (book) loadChapter(p.chapter, p.percent || 0); });
+  window.api.onSwitchBook(async (p) => {
+    const result = await switchToBook(p.id, p.updatedAt || Date.now(), p.broadcast !== false);
+    window.api.reportBookSwitch({ id: p.id, ...result });
+  });
   window.api.onShown(() => pullNow());
   window.api.onHiding(() => pushNow());
   window.api.onSyncLoginClosed?.(() => { void pullNow(); void syncCurrentBook(); });
 
+  await switchToBook(activeBookId(), config.currentBookUpdatedAt || 0, false);
+
   // 云端拉取一次，并定时轮询捕捉手机端的更新
-  pullNow();
+  if (book) pullNow();
   syncCurrentBook();
   setInterval(() => {
     if (!document.hidden) {

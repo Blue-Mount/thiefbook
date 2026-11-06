@@ -32,6 +32,8 @@ contextBridge.exposeInMainWorld('api', {
   onGoto: (cb) => ipcRenderer.on('reader:goto', (_e, p) => cb(p)),
   switchBook: (payload) => ipcRenderer.send('reader:switchBook', payload),
   onSwitchBook: (cb) => ipcRenderer.on('reader:switchBook', (_e, p) => cb(p)),
+  reportBookSwitch: (result) => ipcRenderer.send('reader:bookSwitchResult', result),
+  onBookSwitchResult: (cb) => ipcRenderer.on('reader:bookSwitchResult', (_e, result) => cb(result)),
 
   // 老板键相关事件
   onShown: (cb) => ipcRenderer.on('reader:shown', () => cb()),

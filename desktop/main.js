@@ -462,15 +462,16 @@ ipcMain.on('reader:goto', (_e, payload) => {
 ipcMain.on('reader:switchBook', (_e, payload) => {
   const bookId = String(payload?.id || '');
   if (!/^[a-z0-9][a-z0-9_-]{0,63}$/i.test(bookId)) return;
-  config.currentBookId = bookId;
-  config.currentBookTitle = String(payload?.title || bookId).slice(0, 100);
-  config.currentBookUpdatedAt = Date.now();
-  saveConfig();
+  // 加载成功后由阅读器提交配置，失败时保留原书和原进度。
   if (reader && !reader.isDestroyed()) reader.webContents.send('reader:switchBook', {
     id: bookId,
-    updatedAt: config.currentBookUpdatedAt,
+    updatedAt: Date.now(),
     broadcast: true,
   });
+});
+ipcMain.on('reader:bookSwitchResult', (event, result) => {
+  if (!reader || event.sender !== reader.webContents) return;
+  if (settingsWin && !settingsWin.isDestroyed()) settingsWin.webContents.send('reader:bookSwitchResult', result);
 });
 ipcMain.on('window:close', (e) => {
   const w = BrowserWindow.fromWebContents(e.sender);
